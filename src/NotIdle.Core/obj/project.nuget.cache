@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "8HXUNtZWcEM=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\ACER\\Desktop\\NotIdle\\src\\NotIdle.Core\\NotIdle.Core.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ACER\\.nuget\\packages\\microsoft.net.illink.tasks\\10.0.0\\microsoft.net.illink.tasks.10.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}

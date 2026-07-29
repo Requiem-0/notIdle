@@ -1,0 +1,11 @@
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\bin\Debug\net10.0-windows\NotIdle.Core.deps.json
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\bin\Debug\net10.0-windows\NotIdle.Core.dll
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\bin\Debug\net10.0-windows\NotIdle.Core.pdb
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\NotIdle.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\NotIdle.Core.AssemblyInfoInputs.cache
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\NotIdle.Core.AssemblyInfo.cs
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\NotIdle.Core.csproj.CoreCompileInputs.cache
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\NotIdle.Core.dll
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\refint\NotIdle.Core.dll
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\NotIdle.Core.pdb
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.Core\obj\Debug\net10.0-windows\ref\NotIdle.Core.dll

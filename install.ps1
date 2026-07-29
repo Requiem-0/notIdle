@@ -1,0 +1,72 @@
+#requires -Version 5.1
+<#
+    install.ps1 - build NotIdle into a real, standalone Windows app.
+
+    After running this once you can close VS Code entirely: NotIdle runs from
+    %LOCALAPPDATA%\NotIdle as its own process, unrelated to any terminal.
+
+        .\install.ps1            # build + install + launch
+        .\install.ps1 -NoLaunch  # build + install, don't start it now
+        .\install.ps1 -Uninstall # stop it and remove the installed copy
+
+    The app self-contains the .NET runtime, so the target PC needs nothing
+    installed. Auto-start is toggled from inside the app ("Start with Windows").
+#>
+param(
+    [switch]$NoLaunch,
+    [switch]$Uninstall
+)
+
+$ErrorActionPreference = 'Stop'
+$AppName   = 'NotIdle'
+$Root      = $PSScriptRoot
+$Project   = Join-Path $Root 'src\NotIdle.App\NotIdle.App.csproj'
+$InstallDir = Join-Path $env:LOCALAPPDATA $AppName
+$InstalledExe = Join-Path $InstallDir "$AppName.exe"
+$StartMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$Shortcut  = Join-Path $StartMenu "$AppName.lnk"
+
+function Stop-Running {
+    Get-Process $AppName -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "Stopping running $AppName (PID $($_.Id))..."
+        $_ | Stop-Process -Force
+    }
+    Start-Sleep -Milliseconds 400
+}
+
+if ($Uninstall) {
+    Stop-Running
+    if (Test-Path $Shortcut)   { Remove-Item $Shortcut -Force }
+    if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
+    Write-Host "Uninstalled." -ForegroundColor Green
+    return
+}
+
+Write-Host "Publishing self-contained single-file exe (this can take a minute)..." -ForegroundColor Cyan
+$publishDir = Join-Path $Root 'artifacts\publish'
+dotnet publish $Project -c Release -r win-x64 --self-contained true `
+    /p:PublishSingleFile=true /p:PublishReadyToRun=true `
+    /p:EnableCompressionInSingleFile=true /p:DebugType=none `
+    -o $publishDir | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+
+Stop-Running  # release the installed exe if a previous copy is running
+
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Copy-Item (Join-Path $publishDir "$AppName.exe") $InstalledExe -Force
+Write-Host "Installed to $InstalledExe" -ForegroundColor Green
+
+# Start Menu shortcut so it shows up in search like any installed app.
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut($Shortcut)
+$lnk.TargetPath = $InstalledExe
+$lnk.WorkingDirectory = $InstallDir
+$lnk.Description = 'NotIdle - idle keep-awake utility'
+$lnk.Save()
+Write-Host "Start Menu shortcut created."
+
+if (-not $NoLaunch) {
+    Start-Process $InstalledExe
+    Write-Host "Launched. Look for the tray icon (near the clock)." -ForegroundColor Green
+    Write-Host "You can now close VS Code; NotIdle keeps running on its own."
+}

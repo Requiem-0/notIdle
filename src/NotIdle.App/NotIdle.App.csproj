@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>NotIdle</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Resources\notidle.ico</ApplicationIcon>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Workstation, non-concurrent GC: the lightest collector for an app that
+         barely allocates. -->
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+    <ConcurrentGarbageCollector>false</ConcurrentGarbageCollector>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- AOT is opted in at publish time (see README), keeping dev builds fast:
+         dotnet publish src/NotIdle.App -c Release -r win-x64 /p:PublishAot=true -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NotIdle.Core\NotIdle.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- App image: embedded so it survives single-file publish. -->
+    <EmbeddedResource Include="Resources\app.png" LogicalName="NotIdle.App.Resources.app.png" />
+    <EmbeddedResource Include="Resources\notidle.ico" LogicalName="NotIdle.App.Resources.notidle.ico" />
+  </ItemGroup>
+
+</Project>

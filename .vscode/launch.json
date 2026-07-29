@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run NotIdle",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/NotIdle.App/bin/Debug/net10.0-windows/NotIdle.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/src/NotIdle.App",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}

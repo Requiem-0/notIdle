@@ -1,0 +1,3 @@
+c:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\bin\Release\net9.0-windows\win-x64\publish\NotIdle.pdb
+c:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\bin\Release\net9.0-windows\win-x64\publish\NotIdle.Core.pdb
+c:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\bin\Release\net9.0-windows\win-x64\publish\NotIdle.exe
