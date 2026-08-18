@@ -21,12 +21,16 @@ internal static class Program
         // about the platform, which is what keeps the core unit-testable.
         var settingsManager = new SettingsManager(new JsonSettingsStore());
 
-        var activity = new UserActivityMonitor(new Win32InputSource());
+        var inputSource = new Win32InputSource();
+        var activity = new UserActivityMonitor(inputSource);
         var windows = new WindowMonitor(new Win32ForegroundWindowSource());
         var stateMachine = new IdleStateManager();
 
         using var executionState = new Win32ExecutionState();
-        var keepAwake = new KeepAwakeEngine(new Win32SyntheticInput(), executionState);
+        // The engine needs to read the cursor as well as move it: the path player and
+        // the auto-clicker both abort the moment the pointer is somewhere they did
+        // not put it, which is how the user always wins a tug of war over the mouse.
+        var keepAwake = new KeepAwakeEngine(new Win32SyntheticInput(), executionState, inputSource);
 
         var controller = new NotIdleController(settingsManager, activity, windows, stateMachine, keepAwake);
         using var context = new TrayApplicationContext(controller, settingsManager);

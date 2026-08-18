@@ -11,13 +11,25 @@ namespace NotIdle.Core;
 /// <param name="KeepAwakeEvents">Cursor pulses emitted.</param>
 /// <param name="KeepAwakeSessions">Times keep-awake has engaged.</param>
 /// <param name="GenuineInputEvents">Real interactions observed.</param>
-/// <param name="IntervalDescription">Configured interval range, formatted.</param>
-/// <param name="CurrentIntervalSeconds">The interval currently being waited out; 0 if none.</param>
+/// <param name="IntervalDescription">Configured pulse interval range, formatted.</param>
+/// <param name="CurrentIntervalSeconds">The pulse interval currently being waited out; 0 if none.</param>
 /// <param name="TimeUntilNextAction">Countdown to the next pulse.</param>
 /// <param name="ForegroundApp">Executable name of the focused app.</param>
 /// <param name="WakeLockHeld">Whether the OS keep-awake request is currently held.</param>
 /// <param name="AutoOffArmed">Whether an auto-off deadline is running.</param>
 /// <param name="TimeUntilAutoOff">Countdown to auto-off; zero when not armed.</param>
+/// <param name="ActionsDescription">Which actions are switched on, e.g. "pulse + click".</param>
+/// <param name="PathRuns">Path runs started.</param>
+/// <param name="PathAbortedRuns">Path runs the user interrupted by taking the mouse.</param>
+/// <param name="PathRunning">A path is being traced right now.</param>
+/// <param name="TimeUntilNextPath">Countdown to the next path run.</param>
+/// <param name="PathDescription">Configured path, formatted.</param>
+/// <param name="ClickCount">Clicks emitted.</param>
+/// <param name="AutoClickActive">The auto-clicker is armed and firing.</param>
+/// <param name="ClickInterruptions">Times the clicker stood down because the pointer moved.</param>
+/// <param name="AutoClickDescription">Configured click cadence, formatted.</param>
+/// <param name="AdaptiveMode">Whether NotIdle is choosing the actions itself.</param>
+/// <param name="AdaptiveNote">What the adaptive tuner decided and why. Empty when adaptive mode is off.</param>
 public sealed record NotIdleStatus(
     bool Enabled,
     ActivityState State,
@@ -32,9 +44,24 @@ public sealed record NotIdleStatus(
     string ForegroundApp,
     bool WakeLockHeld,
     bool AutoOffArmed,
-    TimeSpan TimeUntilAutoOff)
+    TimeSpan TimeUntilAutoOff,
+    string ActionsDescription,
+    long PathRuns,
+    long PathAbortedRuns,
+    bool PathRunning,
+    TimeSpan TimeUntilNextPath,
+    string PathDescription,
+    long ClickCount,
+    bool AutoClickActive,
+    long ClickInterruptions,
+    string AutoClickDescription,
+    bool AdaptiveMode,
+    string AdaptiveNote)
 {
     public static readonly NotIdleStatus Empty = new(
         false, ActivityState.Disabled, TimeSpan.Zero, TimeSpan.Zero,
-        0, 0, 0, "—", 0, TimeSpan.Zero, "—", false, false, TimeSpan.Zero);
+        0, 0, 0, "—", 0, TimeSpan.Zero, "—", false, false, TimeSpan.Zero,
+        "—", 0, 0, false, TimeSpan.Zero, "off",
+        0, false, 0, "off",
+        false, string.Empty);
 }

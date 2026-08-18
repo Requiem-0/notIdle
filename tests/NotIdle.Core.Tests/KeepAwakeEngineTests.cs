@@ -16,7 +16,7 @@ public class KeepAwakeEngineTests
             RestoreCursor = restoreCursor,
         };
         settings.Normalize();
-        return (desktop, new KeepAwakeEngine(desktop, desktop), settings);
+        return (desktop, new KeepAwakeEngine(desktop, desktop, desktop), settings);
     }
 
     [Fact]

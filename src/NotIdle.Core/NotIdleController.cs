@@ -20,6 +20,20 @@ public sealed class NotIdleController : IDisposable
     /// </summary>
     private const int PollIntervalMs = 1000;
 
+    /// <summary>
+    /// How long to wait after an action before asking whether the OS registered it.
+    /// One poll: the injection is delivered synchronously, but the idle counter is
+    /// only re-read on the next sample.
+    /// </summary>
+    private const int OutcomeVerifyDelayMs = 1000;
+
+    /// <summary>
+    /// Slack allowed when matching the observed last-input timestamp against the
+    /// tick we injected at. Same order as the attribution window in
+    /// <see cref="UserActivityMonitor"/>, and for the same reasons.
+    /// </summary>
+    private const int OutcomeMatchWindowMs = 500;
+
     private readonly SettingsManager _settingsManager;
     private readonly UserActivityMonitor _activity;
     private readonly WindowMonitor _windows;
@@ -36,6 +50,10 @@ public sealed class NotIdleController : IDisposable
     // Auto-off deadline as a TickCount64 value. 0 means "not armed".
     private long _autoOffDeadlineTick;
     private int _autoOffArmedForMinutes;
+
+    // Tick of an action whose effect on the OS idle clock has not been checked yet.
+    // 0 means nothing is pending. Feeds the adaptive ladder.
+    private long _pendingOutcomeTick;
 
     /// <summary>Raised on every state transition. May fire on a pool thread.</summary>
     public event Action<ActivityState>? StateChanged;
@@ -57,6 +75,11 @@ public sealed class NotIdleController : IDisposable
         _stateMachine.StateChanged += (_, next) => StateChanged?.Invoke(next);
         _settingsManager.Changed += OnSettingsChanged;
 
+        // Every synthetic event — pulse, path frame, click — has to be credited to
+        // NotIdle, or the app's own input would read as the user returning and
+        // switch keep-awake straight back off.
+        _keepAwake.SyntheticInputEmitted += _activity.NoteSyntheticInput;
+
         // Created stopped; Start() arms it.
         _timer = new Timer(OnTick, null, Timeout.Infinite, Timeout.Infinite);
     }
@@ -72,9 +95,11 @@ public sealed class NotIdleController : IDisposable
             _running = true;
             // Starting is itself a user action — never fire keep-awake instantly.
             _activity.MarkActiveNow();
-            _keepAwake.ResetSchedule(Environment.TickCount64);
+            _pendingOutcomeTick = 0;
             ArmAutoOff(_settings, Environment.TickCount64);
         }
+
+        _keepAwake.ResetSchedule(Environment.TickCount64);
         Evaluate(); // Publish a state immediately rather than after one poll.
         Arm();
     }
@@ -87,8 +112,12 @@ public sealed class NotIdleController : IDisposable
             if (_disposed) return;
             _running = false;
             _autoOffDeadlineTick = 0;
+            _pendingOutcomeTick = 0;
             _timer.Change(Timeout.Infinite, Timeout.Infinite);
         }
+
+        // Stops any path run in flight and disarms the click timer as well.
+        _keepAwake.ResetSchedule(Environment.TickCount64);
         _keepAwake.ReleaseWakeLock();
         _stateMachine.Reset();
     }
@@ -139,15 +168,14 @@ public sealed class NotIdleController : IDisposable
     }
 
     /// <summary>Emit one keep-awake pulse right now, for the UI's Test action.</summary>
-    public void TriggerTestAction()
-    {
-        Settings settings;
-        lock (_gate) settings = _settings;
+    public void TriggerTestAction() => _keepAwake.PulseNow(Environment.TickCount64, CurrentSettings());
 
-        long now = Environment.TickCount64;
-        CursorPoint after = _keepAwake.PulseNow(now, settings);
-        _activity.NoteSyntheticInput(now, after);
-    }
+    /// <summary>Trace one path run right now, for the UI's Test action.</summary>
+    /// <returns>False if a run is already in flight or the path describes no movement.</returns>
+    public bool TriggerTestPath() => _keepAwake.RunPathNow(CurrentSettings());
+
+    /// <summary>Emit one click right now, for the UI's Test action.</summary>
+    public void TriggerTestClick() => _keepAwake.ClickNow(Environment.TickCount64, CurrentSettings());
 
     /// <summary>Zero the session counters shown on the dashboard.</summary>
     public void ResetStatistics()
@@ -191,7 +219,24 @@ public sealed class NotIdleController : IDisposable
             ForegroundApp: string.IsNullOrEmpty(window.Process) ? "—" : window.Process,
             WakeLockHeld: _keepAwake.WakeLockHeld,
             AutoOffArmed: autoOffArmed,
-            TimeUntilAutoOff: untilAutoOff);
+            TimeUntilAutoOff: untilAutoOff,
+            ActionsDescription: settings.DescribeActions(),
+            PathRuns: _keepAwake.PathRunCount,
+            PathAbortedRuns: _keepAwake.PathAbortedRuns,
+            PathRunning: _keepAwake.IsPathRunning,
+            TimeUntilNextPath: _keepAwake.TimeUntilNextPath(now),
+            PathDescription: settings.DescribePath(),
+            ClickCount: _keepAwake.ClickCount,
+            AutoClickActive: _keepAwake.IsAutoClickActive,
+            ClickInterruptions: _keepAwake.ClickInterruptions,
+            AutoClickDescription: settings.DescribeAutoClick(),
+            AdaptiveMode: settings.AdaptiveMode,
+            AdaptiveNote: settings.AdaptiveMode ? _keepAwake.Tuner.Describe() : string.Empty);
+    }
+
+    private Settings CurrentSettings()
+    {
+        lock (_gate) return _settings;
     }
 
     private void OnSettingsChanged(Settings settings)
@@ -279,6 +324,10 @@ public sealed class NotIdleController : IDisposable
         ActivitySample sample = _activity.Sample(window.Handle, now);
         bool standDown = settings.PauseWhenFullScreen && window.WantsUninterrupted;
 
+        // Now that the sample has refreshed the OS idle reading, settle any
+        // outstanding "did our last action actually register?" question.
+        VerifyPendingOutcome(settings, now);
+
         // ── Decide ───────────────────────────────────────────────────────────
         var inputs = new StateInputs(
             Enabled: settings.Enabled,
@@ -300,18 +349,43 @@ public sealed class NotIdleController : IDisposable
         // Every enabled state holds the power request — notably including Suspended
         // and Locked. A full-screen film is exactly when the display should stay on,
         // and a locked machine should still finish its downloads. What varies
-        // between states is whether a cursor pulse is warranted.
+        // between states is whether synthetic input is warranted.
         _keepAwake.HoldWakeLock(settings.KeepDisplayOn);
 
-        if (state.AllowsCursorPulse())
+        if (!state.AllowsCursorPulse())
         {
-            if (_keepAwake.TryPulse(now, settings, out CursorPoint cursorAfter))
-                _activity.NoteSyntheticInput(now, cursorAfter);
-        }
-        else
-        {
+            // Stands the path player and the click timer down too, so nothing keeps
+            // firing on its own schedule once the user is back.
             _keepAwake.ResetSchedule(now);
+            return;
         }
+
+        // Each action owns its own schedule, so several can fire on the same tick.
+        ActionsFired fired = _keepAwake.RunDueActions(now, settings);
+        _keepAwake.SetAutoClickActive(true, settings);
+
+        if (fired.Any)
+        {
+            lock (_gate) _pendingOutcomeTick = now;
+        }
+    }
+
+    // The OS resets one input-idle counter for real and injected input alike. That
+    // makes it useless for attribution — but perfect for verifying our own work: if
+    // the counter did not move to our injection tick, the input was swallowed and
+    // the adaptive tuner should escalate.
+    private void VerifyPendingOutcome(Settings settings, long nowTick)
+    {
+        long pending;
+        lock (_gate)
+        {
+            pending = _pendingOutcomeTick;
+            if (pending == 0 || nowTick - pending < OutcomeVerifyDelayMs) return;
+            _pendingOutcomeTick = 0;
+        }
+
+        bool landed = _activity.LastObservedInputTick >= pending - OutcomeMatchWindowMs;
+        _keepAwake.NoteActionOutcome(settings, landed);
     }
 
     // One-shot reschedule (period = Infinite) so ticks can never overlap.
@@ -334,6 +408,7 @@ public sealed class NotIdleController : IDisposable
         }
 
         _settingsManager.Changed -= OnSettingsChanged;
+        _keepAwake.SyntheticInputEmitted -= _activity.NoteSyntheticInput;
         _timer.Dispose();
         _keepAwake.Dispose();
     }

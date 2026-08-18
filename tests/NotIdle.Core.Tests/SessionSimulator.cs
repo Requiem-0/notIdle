@@ -25,7 +25,7 @@ public sealed class SessionSimulator
     public SessionSimulator(Settings? settings = null)
     {
         Activity = new UserActivityMonitor(Desktop);
-        Engine = new KeepAwakeEngine(Desktop, Desktop);
+        Engine = new KeepAwakeEngine(Desktop, Desktop, Desktop);
         Settings = settings ?? new Settings
         {
             IdleThresholdSeconds = 30,

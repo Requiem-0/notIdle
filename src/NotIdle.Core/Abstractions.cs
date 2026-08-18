@@ -4,6 +4,33 @@ namespace NotIdle.Core;
 public readonly record struct CursorPoint(int X, int Y);
 
 /// <summary>
+/// The bounding box of the whole virtual desktop, in screen coordinates. Path
+/// movement is clamped to it so a badly-typed waypoint can never fling the
+/// pointer somewhere unreachable.
+/// </summary>
+public readonly record struct ScreenBounds(int Left, int Top, int Width, int Height)
+{
+    /// <summary>Used when the platform refuses to answer; a plausible single 1080p monitor.</summary>
+    public static readonly ScreenBounds Fallback = new(0, 0, 1920, 1080);
+
+    public int Right => Left + Width;
+    public int Bottom => Top + Height;
+    public CursorPoint Center => new(Left + (Width / 2), Top + (Height / 2));
+
+    public CursorPoint Clamp(CursorPoint p) => new(
+        Math.Clamp(p.X, Left, Math.Max(Left, Right - 1)),
+        Math.Clamp(p.Y, Top, Math.Max(Top, Bottom - 1)));
+}
+
+/// <summary>Which button a synthetic click presses.</summary>
+public enum MouseButton
+{
+    Left,
+    Right,
+    Middle,
+}
+
+/// <summary>
 /// System-wide input telemetry. Abstracted so the monitoring layer is testable
 /// without a real desktop session.
 /// </summary>
@@ -25,8 +52,12 @@ public interface ISystemInputSource
 }
 
 /// <summary>
-/// Emits the single, minimal synthetic input event NotIdle is allowed to produce.
-/// Deliberately narrow: no clicks, no keystrokes, no window interaction.
+/// Emits the synthetic input NotIdle is allowed to produce.
+///
+/// <para>Three primitives, each opted into separately by the user:
+/// the imperceptible keep-awake <see cref="Pulse"/> (always available),
+/// <see cref="MoveTo"/> for tracing a configured path, and <see cref="Click"/>
+/// for the auto-clicker. Keystrokes are still never synthesized.</para>
 /// </summary>
 public interface ISyntheticInputSink
 {
@@ -39,6 +70,19 @@ public interface ISyntheticInputSink
     /// </param>
     /// <returns>Where the cursor ended up, so the caller can keep its baseline in sync.</returns>
     CursorPoint Pulse(bool restoreCursor);
+
+    /// <summary>
+    /// Move the pointer to an absolute screen position, as a real mouse move —
+    /// not a silent <c>SetCursorPos</c>, so it resets the input-idle clock too.
+    /// </summary>
+    /// <returns>Where the cursor actually ended up.</returns>
+    CursorPoint MoveTo(int x, int y);
+
+    /// <summary>Press and release a mouse button at the current pointer position.</summary>
+    void Click(MouseButton button, bool doubleClick);
+
+    /// <summary>Bounds of the whole virtual desktop, for clamping path waypoints.</summary>
+    ScreenBounds GetVirtualScreen();
 }
 
 /// <summary>

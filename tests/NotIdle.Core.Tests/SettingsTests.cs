@@ -1,4 +1,5 @@
 using NotIdle.Core;
+using NotIdle.Core.Actions;
 using Xunit;
 
 namespace NotIdle.Core.Tests;
@@ -35,23 +36,73 @@ public class SettingsTests
     [Fact]
     public void CloneCopiesEveryField()
     {
-        var s = new Settings
-        {
-            Enabled = false,
-            IdleThresholdSeconds = 42,
-            MinIntervalSeconds = 20,
-            MaxIntervalSeconds = 90,
-            RestoreCursor = false,
-            KeepDisplayOn = false,
-            PauseWhenFullScreen = false,
-            StartWithWindows = true,
-            AutoOffMinutes = 120,
-        };
+        // Every field carries a non-default value, so a line missing from Clone()
+        // shows up as a difference rather than as two matching defaults.
+        Settings s = FullyPopulated();
 
         Settings copy = s.Clone();
 
         Assert.Equivalent(s, copy, strict: true);
         Assert.NotSame(s, copy);
+    }
+
+    [Fact]
+    public void EverySettingSurvivesARoundTripThroughTheFile()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"notidle-{Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new JsonSettingsStore(path);
+            Settings original = FullyPopulated();
+
+            store.Save(original);
+            Settings loaded = store.Load();
+
+            Assert.Equivalent(original, loaded, strict: true);
+            // Enums are written as names, so a hand-edited file stays readable.
+            Assert.Contains("FigureEight", File.ReadAllText(path), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    private static Settings FullyPopulated()
+    {
+        var s = new Settings
+        {
+            Enabled = false,
+            IdleThresholdSeconds = 42,
+
+            CursorPulseEnabled = false,
+            MinIntervalSeconds = 20,
+            MaxIntervalSeconds = 90,
+            RestoreCursor = false,
+
+            PathEnabled = true,
+            PathPattern = PathPattern.FigureEight,
+            PathOrigin = PathOrigin.ScreenCenter,
+            PathRadius = 250,
+            PathSpeedPixelsPerSecond = 1200,
+            PathMinIntervalSeconds = 30,
+            PathMaxIntervalSeconds = 300,
+            PathRestoreCursor = false,
+            PathCustomPoints = "10,20 30,40",
+
+            AutoClickEnabled = true,
+            AutoClickButton = MouseButton.Middle,
+            AutoClickIntervalMs = 250,
+            AutoClickDoubleClick = true,
+
+            AdaptiveMode = false,
+            KeepDisplayOn = false,
+            PauseWhenFullScreen = false,
+            StartWithWindows = true,
+            AutoOffMinutes = 120,
+        };
+        s.Normalize();
+        return s;
     }
 
     [Theory]

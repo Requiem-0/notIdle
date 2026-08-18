@@ -13,21 +13,67 @@ mechanism for each:
    I'm doing this", the same one media players and installers use. Held for as long
    as keep-awake is on; prevents system sleep and, optionally, display-off. This is
    the primary mechanism and involves no synthetic input at all.
-2. **A 1-pixel cursor move, out and straight back**, on a randomized interval. The
-   power request above doesn't touch the *input* idle clock that session-idle and
-   lock-on-idle policies read; one imperceptible movement resets it.
+2. **Synthetic pointer input**, on a randomized interval. The power request above
+   doesn't touch the *input* idle clock that session-idle and lock-on-idle policies
+   read; pointer input resets it.
 
-That is the entire synthetic-input surface. NotIdle **never** clicks, types,
-scrolls, or interacts with any window or control, and makes no attempt to imitate a
-person working.
+## The three actions
+
+Each action has its own enable flag and its own randomized schedule, so any
+combination of them can be in flight at the same time. They are not alternatives and
+they do not take turns.
+
+| Action | Default | What it does |
+|---|---|---|
+| **Cursor pulse** | on | One 1-pixel move, out and straight back. Imperceptible; the cheapest thing that resets the idle clock. |
+| **Path movement** | off | Walks the pointer along a shape — circle, square, figure eight, random walk, or a hand-typed list of screen coordinates — animated at a configured speed. |
+| **Auto-click** | off | Presses a button on a millisecond-granularity timer of its own, because useful click rates are far faster than the one-second poll. |
+
+**Every action loses to a real hand.** Path movement re-checks before each frame that
+the pointer is still where it left it and aborts the run if it isn't; the auto-clicker
+stops itself outright on the same signal, rather than waiting up to a second for the
+next poll to notice. The clicker also stands down while a path is being traced, so a
+click can never land halfway through a stroke and drag something.
+
+Keystrokes are still never synthesized, and no action fires until the idle threshold
+has passed.
+
+## Adaptive mode
+
+On by default. NotIdle decides which actions to run and how often, instead of asking
+you to guess.
+
+The signal it uses is its own work: injected input and real input reset the same OS
+counter, which is a nuisance for attribution but perfect for verification. After a
+pulse at tick *T*, the system's last-input timestamp should have moved to
+approximately *T*. When it hasn't, the input is being swallowed — a remote session, an
+input-blocking policy, a driver coalescing 1-pixel moves away — and pulsing harder is
+the right answer.
+
+| Rung | Behaviour | Entered when |
+|---|---|---|
+| `Minimal` | Pulse only, at your slowest configured interval | 12 consecutive actions landed |
+| `Standard` | Pulse only, on your configured range | the default |
+| `Assertive` | Pulse **and** path movement, on a shortened interval | 2 consecutive actions swallowed |
+
+Escalation is fast (2 failures) and relaxation is slow (12 successes), so one flake
+doesn't move it and one lucky pulse doesn't undo an escalation. If even `Assertive`
+gets nowhere for six cycles it stops climbing and says so on the dashboard — at that
+point the power request is doing all the work.
+
+The ladder never enables clicking. A click lands *inside* whatever application is
+under the pointer; that is a decision you make explicitly, not one a heuristic makes
+for you. Adaptive mode can also only *add* to what you asked for — anything you
+enabled by hand stays enabled.
 
 ## Genuine activity vs. keep-awake
 
 `GetLastInputInfo` is reset by *injected* input as well as real input, so the raw
 counter cannot tell the two apart. NotIdle keeps its own genuine-idle clock:
-`KeepAwakeEngine` reports the tick at which it pulsed, and `UserActivityMonitor`
-discounts an input event only when **both** the timestamp lands inside a 400 ms
-window of that pulse **and** the cursor is exactly where the pulse left it.
+`KeepAwakeEngine` reports the tick of every synthetic event it emits — pulse, path
+frame, or click — and `UserActivityMonitor` discounts an input event only when
+**both** the timestamp lands inside a 400 ms window of one of ours **and** the cursor
+is exactly where we left it.
 Everything else counts as real. Ambiguity resolves toward "genuine", so real input
 is far likelier to be over-counted than missed.
 
@@ -40,15 +86,16 @@ climbing past ten minutes, however many keep-awake pulses fired in between.
 |---|---|
 | `Active` | Genuine interaction seen in the last few seconds |
 | `Idle` | No interaction, threshold not yet reached |
-| `KeepAwake` | Threshold passed — holding the session awake, cursor pulses running |
-| `Suspended` | A full-screen, game, or presentation app has focus: power request held, cursor pulses stopped |
-| `Locked` | Workstation locked: power request held, cursor pulses stopped |
+| `KeepAwake` | Threshold passed — holding the session awake, the enabled actions running |
+| `Suspended` | A full-screen, game, or presentation app has focus: power request held, all actions stopped |
+| `Locked` | Workstation locked: power request held, all actions stopped |
 | `Disabled` | Switched off; normal power policy applies |
 
 Every enabled state holds the power request — including `Suspended` and `Locked`.
 A full-screen film is exactly when the display should stay on, and a locked machine
-should still finish its downloads. What varies between states is whether a **cursor
-pulse** is warranted, and only `KeepAwake` qualifies.
+should still finish its downloads. What varies between states is whether **synthetic
+input** is warranted, and only `KeepAwake` qualifies. Leaving `KeepAwake` stops any
+path run in flight and disarms the click timer immediately.
 
 Lock/unlock and sleep/resume are the two moments polling cannot infer on its own:
 no input arrives while locked or asleep, yet a person is unmistakably present the
@@ -79,7 +126,12 @@ src/
 |  |  +- UserActivityMonitor.cs   # genuine input, with synthetic attribution
 |  |  +- WindowMonitor.cs         # foreground app / full-screen state
 |  +- IdleStateManager.cs         # the state machine (pure logic, no I/O)
-|  +- KeepAwakeEngine.cs          # wake request + randomized 1 px pulse
+|  +- KeepAwakeEngine.cs          # wake request + the three independent schedules
+|  +- Actions/
+|  |  +- CursorPath.cs            # waypoint geometry + coordinate parsing (pure)
+|  |  +- PathPlayer.cs            # animates a run off-thread; aborts if you take the mouse
+|  |  +- AutoClicker.cs           # own ms-granularity timer; stops when the pointer moves
+|  |  +- AdaptiveTuner.cs         # the escalate/relax ladder
 |  +- SettingsManager.cs          # loads, normalizes, persists, notifies
 |  +- ActivityState.cs  Settings.cs  NotIdleStatus.cs  Abstractions.cs
 |  +- JsonSettingsStore.cs        # %APPDATA%\NotIdle\settings.json (source-gen JSON)
@@ -98,16 +150,48 @@ tests/
 
 ## Settings
 
+The **Actions** tab configures the three actions; the **Settings** tab holds
+everything global. One Save button writes both.
+
 | Setting | Default | Notes |
 |---|---|---|
 | Enable keep-awake | on | Master toggle; off means zero timers |
 | Idle before keep-awake | 5 min | Accepts seconds or minutes |
-| Minimum / maximum interval | 45 s / 120 s | Each pulse waits a fresh uniform draw from this range, plus sub-second jitter |
-| Return the cursor | on | Explicit restore, so a pulse racing your hand can't displace the pointer |
+| Adaptive mode | on | NotIdle picks the actions and cadence itself; never enables clicking |
 | Keep the display on | on | Adds `ES_DISPLAY_REQUIRED` |
 | Pause for full-screen apps | on | Games, presentations, borderless-fullscreen |
 | Auto-off after | 0 (never) | Switches keep-awake off N minutes after it is turned on |
 | Start with Windows | off | Per-user `HKCU\…\Run`; no admin rights |
+
+**Cursor pulse**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Enabled | on | |
+| Minimum / maximum interval | 45 s / 120 s | Each pulse waits a fresh uniform draw from this range, plus sub-second jitter |
+| Return the cursor | on | Explicit restore, so a pulse racing your hand can't displace the pointer |
+
+**Path movement**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Enabled | off | |
+| Pattern | Circle | Circle, square, figure eight, random walk, or custom points |
+| Centred on | the cursor | Or the middle of the virtual desktop. Ignored for custom points |
+| Size / radius | 120 px | 10–2000; waypoints are clamped to the desktop |
+| Speed | 600 px/s | 40–8000; frames are emitted at ~66 fps |
+| Minimum / maximum interval | 60 s / 180 s | Independent of the pulse interval |
+| Return the cursor | on | Puts the pointer back when the run finishes |
+| Points | — | Absolute screen coordinates as `x,y` pairs, e.g. `200,300  900,450  600,800`. Separate them with spaces, newlines, semicolons or `->`; malformed pairs are skipped. Max 256, and a run is capped at 60 s whatever the geometry says. Fewer than two usable points switches the action off at save time and tells you so |
+
+**Auto-click**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Enabled | off | Only ever switched on by you |
+| Button | Left | Left, right, or middle |
+| Interval | 1000 ms | 10 ms–10 min, on its own timer |
+| Double click | off | Delivered as one four-event batch so it can't degrade into two singles |
 
 Note on the wake request: it is held from the moment keep-awake is enabled, not only
 once the threshold expires. Otherwise a threshold longer than the machine's own sleep
@@ -124,10 +208,16 @@ is *not* extended by activity; saving an unrelated setting does not restart it.
 dotnet test tests/NotIdle.Core.Tests
 ```
 
-48 tests over the pure core. The load-bearing ones assert the invariant the whole
-app rests on: `FakeDesktop` resets its input timestamp on synthetic pulses exactly
+95 tests over the pure core. The load-bearing ones assert the invariant the whole
+app rests on: `FakeDesktop` resets its input timestamp on synthetic input exactly
 as `GetLastInputInfo` does, then the suite proves ten simulated minutes of pulsing
 leaks zero genuine events and never stalls the genuine-idle clock.
+
+`SimultaneousActionTests` covers the parts that involve real threads: that a pulse
+and a path run can start on the same tick, that each action keeps its own cadence,
+that a path aborts and the clicker disarms when the pointer moves under them, and
+that the adaptive ladder adds path movement — but never clicking — when input stops
+landing. It waits on conditions rather than assuming an ordering.
 
 ## Install as a standalone app (recommended)
 

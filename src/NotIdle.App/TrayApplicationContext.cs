@@ -108,7 +108,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Icon = _icons.For(state);
         _tray.Text = Truncate(
             $"NotIdle — {label}\n" +
-            $"Idle after {_settings.DescribeThreshold()} · every {_settings.DescribeInterval()}");
+            $"Idle after {_settings.DescribeThreshold()} · {_settings.DescribeActions()}\n" +
+            $"Pulse every {_settings.DescribeInterval()}");
     }
 
     // ── Session / power events ───────────────────────────────────────────────

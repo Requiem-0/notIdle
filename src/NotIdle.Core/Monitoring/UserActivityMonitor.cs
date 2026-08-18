@@ -83,6 +83,18 @@ public sealed class UserActivityMonitor
     }
 
     /// <summary>
+    /// The system's last-input timestamp as of the most recent <see cref="Sample"/>,
+    /// whoever caused it. Unlike the genuine-idle clock this one <em>is</em> moved by
+    /// our own injections — which is exactly what makes it useful: comparing it
+    /// against the tick we injected at tells us whether the OS accepted our input at
+    /// all. See <see cref="Actions.AdaptiveTuner"/>.
+    /// </summary>
+    public long LastObservedInputTick
+    {
+        get { lock (_gate) return _lastObservedInputTick; }
+    }
+
+    /// <summary>
     /// Take one reading. <paramref name="foregroundWindow"/> comes from
     /// <see cref="WindowMonitor"/> so both monitors observe the same instant.
     /// </summary>
