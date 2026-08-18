@@ -13,13 +13,13 @@ namespace NotIdle.App;
 /// </summary>
 internal sealed class TrayIconFactory : IDisposable
 {
-    private readonly Dictionary<AppState, Icon> _cache = new();
+    private readonly Dictionary<ActivityState, Icon> _cache = new();
     private readonly Bitmap? _photo = LoadEmbeddedPhoto();
 
-    public Icon For(AppState state)
+    public Icon For(ActivityState state)
     {
         if (_cache.TryGetValue(state, out Icon? cached)) return cached;
-        Icon icon = _photo is null ? BuildFallback(ColorFor(state)) : BuildFromPhoto(state);
+        Icon icon = _photo is null ? BuildFallback(Theme.ColorFor(state)) : BuildFromPhoto(state);
         _cache[state] = icon;
         return icon;
     }
@@ -46,15 +46,7 @@ internal sealed class TrayIconFactory : IDisposable
         }
     }
 
-    private static Color ColorFor(AppState state) => state switch
-    {
-        AppState.Monitoring => Color.FromArgb(0x2E, 0xCC, 0x71),   // green  — watching
-        AppState.Idle => Color.FromArgb(0xF1, 0xC4, 0x0F),          // amber  — counting down
-        AppState.ActionRunning => Color.FromArgb(0x34, 0x98, 0xDB), // blue   — acting
-        _ => Color.FromArgb(0x95, 0xA5, 0xA6),                       // gray   — paused
-    };
-
-    private Icon BuildFromPhoto(AppState state)
+    private Icon BuildFromPhoto(ActivityState state)
     {
         const int size = 32;
         using var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
@@ -78,7 +70,7 @@ internal sealed class TrayIconFactory : IDisposable
             var dot = new Rectangle(size - d - 1, size - d - 1, d, d);
             using var ring = new SolidBrush(Color.White);
             g.FillEllipse(ring, dot.X - 2, dot.Y - 2, d + 4, d + 4);
-            using var fill = new SolidBrush(ColorFor(state));
+            using var fill = new SolidBrush(Theme.ColorFor(state));
             g.FillEllipse(fill, dot);
         }
         return ToIcon(bmp);

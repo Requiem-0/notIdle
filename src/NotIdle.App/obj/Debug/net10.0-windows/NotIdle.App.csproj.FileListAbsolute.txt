@@ -16,3 +16,4 @@ C:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\obj\Debug\net10.0-windows\refint\N
 C:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\obj\Debug\net10.0-windows\NotIdle.pdb
 C:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\obj\Debug\net10.0-windows\NotIdle.App.genruntimeconfig.cache
 C:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\obj\Debug\net10.0-windows\ref\NotIdle.dll
+C:\Users\ACER\Desktop\NotIdle\src\NotIdle.App\obj\Debug\net10.0-windows\NotIdle.App.sourcelink.json

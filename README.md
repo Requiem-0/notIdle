@@ -1,41 +1,102 @@
 # NotIdle
 
-A lightweight Windows tray utility that watches for user inactivity and, after a
-configurable idle threshold, performs a brief mouse "keep-awake" nudge for a
-configurable duration. No network, no accounts, no telemetry — it does nothing
-observable beyond a tray icon and a settings file.
+A lightweight Windows tray utility that keeps your computer and session awake when
+you deliberately step away — while keeping an honest, separate record of when you
+were genuinely at the keyboard. No network, no accounts, no telemetry.
+
+## What it actually does
+
+Keeping a session awake needs two different things, and NotIdle uses the smallest
+mechanism for each:
+
+1. **`SetThreadExecutionState`** — the supported Windows API for "don't sleep while
+   I'm doing this", the same one media players and installers use. Held for as long
+   as keep-awake is on; prevents system sleep and, optionally, display-off. This is
+   the primary mechanism and involves no synthetic input at all.
+2. **A 1-pixel cursor move, out and straight back**, on a randomized interval. The
+   power request above doesn't touch the *input* idle clock that session-idle and
+   lock-on-idle policies read; one imperceptible movement resets it.
+
+That is the entire synthetic-input surface. NotIdle **never** clicks, types,
+scrolls, or interacts with any window or control, and makes no attempt to imitate a
+person working.
+
+## Genuine activity vs. keep-awake
+
+`GetLastInputInfo` is reset by *injected* input as well as real input, so the raw
+counter cannot tell the two apart. NotIdle keeps its own genuine-idle clock:
+`KeepAwakeEngine` reports the tick at which it pulsed, and `UserActivityMonitor`
+discounts an input event only when **both** the timestamp lands inside a 400 ms
+window of that pulse **and** the cursor is exactly where the pulse left it.
+Everything else counts as real. Ambiguity resolves toward "genuine", so real input
+is far likelier to be over-counted than missed.
+
+The upshot: leave the machine for ten minutes and *Since genuine interaction* keeps
+climbing past ten minutes, however many keep-awake pulses fired in between.
+
+## States
+
+| State | Meaning |
+|---|---|
+| `Active` | Genuine interaction seen in the last few seconds |
+| `Idle` | No interaction, threshold not yet reached |
+| `KeepAwake` | Threshold passed — holding the session awake |
+| `Suspended` | Standing down: a full-screen, game, or presentation app has focus |
+| `Disabled` | Switched off; normal power policy applies |
+
+Context awareness comes from `SHQueryUserNotificationState` (the shell's own
+"is now a bad time?" answer, covering presentation mode and exclusive-fullscreen
+D3D) plus a geometry check that catches borderless-fullscreen apps.
 
 ## Design at a glance
 
-- **`NotIdle.Core`** — the background engine. UI-free and unit-testable. A single
-  self-rescheduling timer polls the near-free `GetLastInputInfo` syscall (no input
-  hooks → zero CPU while you're active) and drives a small state machine
-  (`Paused → Monitoring → Idle → ActionRunning`).
-- **`NotIdle.App`** — the WinForms tray shell: `NotifyIcon`, context menu, and an
-  on-demand settings dialog (created when opened, disposed on close). Subscribes to
-  the engine and marshals its callbacks onto the UI thread. Holds no business logic.
-- **Communication** — plain in-process C# events. No IPC, no second process, no
-  Windows Service.
+- **`NotIdle.Core`** — UI-free and unit-testable. One self-rescheduling 1 s timer in
+  `NotIdleController` drives everything; detection is low-frequency polling of
+  near-free syscalls rather than input hooks, so the CPU stays parked while you work.
+- **`NotIdle.App`** — the WinForms tray shell plus a dashboard window whose refresh
+  timer only runs while it is visible. Holds no business logic.
+- **Communication** — plain in-process C# events. No IPC, no second process, no service.
 - **Config** — one JSON file at `%APPDATA%\NotIdle\settings.json`, written atomically
   (temp + move) and loaded defensively (corrupt file → defaults).
 
 ```
 src/
-├─ NotIdle.Core/            # engine, no UI
-│  ├─ IdleEngine.cs         # timer + state machine (allocation-free hot path)
-│  ├─ AppState.cs  Settings.cs  Abstractions.cs
-│  ├─ JsonSettingsStore.cs  # %APPDATA%\NotIdle\settings.json (source-gen JSON)
-│  └─ Native/               # GetLastInputInfo, SendInput (P/Invoke)
-└─ NotIdle.App/             # WinForms tray
-   ├─ Program.cs            # entry, single-instance mutex, composition root
+├─ NotIdle.Core/                  # engine, no UI
+│  ├─ NotIdleController.cs        # the one timer; observe → decide → act
+│  ├─ Monitoring/
+│  │  ├─ UserActivityMonitor.cs   # genuine input, with synthetic attribution
+│  │  └─ WindowMonitor.cs         # foreground app / full-screen state
+│  ├─ IdleStateManager.cs         # Active / Idle / KeepAwake state machine (pure)
+│  ├─ KeepAwakeEngine.cs          # wake request + randomized 1 px pulse
+│  ├─ SettingsManager.cs          # loads, normalizes, persists, notifies
+│  ├─ ActivityState.cs  Settings.cs  NotIdleStatus.cs  Abstractions.cs
+│  ├─ JsonSettingsStore.cs        # %APPDATA%\NotIdle\settings.json (source-gen JSON)
+│  └─ Native/                     # GetLastInputInfo, SendInput, SetThreadExecutionState,
+│                                 #   foreground-window + notification-state probes
+└─ NotIdle.App/                   # WinForms tray
+   ├─ Program.cs                  # entry, single-instance mutex, composition root
    ├─ TrayApplicationContext.cs   # tray icon + menu
-   ├─ ControlPanelForm.cs   # the one settings/status window (start/stop/apply/test)
-   ├─ TrayIconFactory.cs    MemoryOptimizer.cs
+   ├─ DashboardForm.cs            # dashboard + settings, one window
+   ├─ Theme.cs  TrayIconFactory.cs  MemoryOptimizer.cs
    └─ Startup/StartupManager.cs   # HKCU Run-key toggle
 ```
 
-The idle threshold accepts a value plus a **seconds / minutes** unit, so you can
-set anything from a few seconds (handy for testing) up to hours.
+## Settings
+
+| Setting | Default | Notes |
+|---|---|---|
+| Enable keep-awake | on | Master toggle; off means zero timers |
+| Idle before keep-awake | 5 min | Accepts seconds or minutes |
+| Minimum / maximum interval | 45 s / 120 s | Each pulse waits a fresh uniform draw from this range, plus sub-second jitter |
+| Return the cursor | on | Explicit restore, so a pulse racing your hand can't displace the pointer |
+| Keep the display on | on | Adds `ES_DISPLAY_REQUIRED` |
+| Pause for full-screen apps | on | Games, presentations, borderless-fullscreen |
+| Start with Windows | off | Per-user `HKCU\…\Run`; no admin rights |
+
+Note on the wake request: it is held from the moment keep-awake is enabled, not only
+once the threshold expires. Otherwise a threshold longer than the machine's own sleep
+timer would never get the chance to fire. No synthetic input is emitted while you're
+active — only the power request is held.
 
 ## Install as a standalone app (recommended)
 
@@ -73,16 +134,17 @@ dotnet run --project src/NotIdle.App    # convenient while coding; Ctrl-C / clos
 
 ## Resource behaviour
 
-- **CPU:** one cheap syscall ~once/second while monitoring; timer *stops entirely*
-  when paused/disabled (literally 0% CPU). Brisk 100 ms ticks only during the short
-  action window.
-- **RAM:** settings dialog is not resident while idle; working set trimmed once after
-  startup (`SetProcessWorkingSetSize`).
+- **CPU:** one small batch of cheap syscalls once per second; the timer *stops
+  entirely* when disabled (literally 0% CPU). Measured ~0.03 s CPU over 12 s of
+  runtime, nearly all of it startup.
+- **RAM:** ~17 MB working set; the dashboard's refresh timer only runs while the
+  window is visible, and the working set is trimmed once after startup
+  (`SetProcessWorkingSetSize`).
 - **Battery:** low-frequency coalescible polling instead of per-input hooks.
 
 ## Next steps (see roadmap in project notes)
 
-- Code-sign the exe (avoids SmartScreen/AV friction for a mouse-moving tool).
+- Code-sign the exe (avoids SmartScreen/AV friction for an input-injecting tool).
 - Installer via Inno Setup or WiX (adds Add/Remove Programs entry + clean uninstall).
 - Handle session lock/unlock and power suspend/resume.
 - Optional: Win32-`Shell_NotifyIcon` shell for a true-AOT, minimal-footprint build.

@@ -5,18 +5,19 @@ using NotIdle.Core;
 namespace NotIdle.App;
 
 /// <summary>
-/// The UI layer and composition root. Owns the tray icon and menu, subscribes to
-/// the engine, and marshals engine callbacks onto the UI thread. Holds no
-/// business logic — the engine is the single source of truth for state.
+/// The tray shell. Owns the notify icon and menu, marshals controller callbacks
+/// onto the UI thread, and reconciles "start with Windows" with the registry.
+/// Holds no business logic — <see cref="NotIdleController"/> is the single source
+/// of truth for state.
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
-    private readonly IdleEngine _engine;
-    private readonly ISettingsStore _store;
+    private readonly NotIdleController _controller;
+    private readonly SettingsManager _settingsManager;
     private readonly TrayIconFactory _icons = new();
     private readonly NotifyIcon _tray;
     private readonly Control _marshaller;
-    private readonly ControlPanelForm _controlPanel;
+    private readonly DashboardForm _dashboard;
 
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _toggleItem;
@@ -24,17 +25,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private Settings _settings;
 
-    public TrayApplicationContext(IdleEngine engine, ISettingsStore store, Settings settings)
+    public TrayApplicationContext(NotIdleController controller, SettingsManager settingsManager)
     {
-        _engine = engine;
-        _store = store;
-        _settings = settings;
+        _controller = controller;
+        _settingsManager = settingsManager;
+        _settings = settingsManager.Current;
 
         _marshaller = new Control();
         _ = _marshaller.Handle; // Realize the handle now so BeginInvoke works once the loop runs.
 
         _statusItem = new ToolStripMenuItem("Status: —") { Enabled = false };
-        _toggleItem = new ToolStripMenuItem("Pause", null, (_, _) => ToggleEnabled());
+        _toggleItem = new ToolStripMenuItem("Pause keep-awake", null, (_, _) => ToggleEnabled());
         _startupItem = new ToolStripMenuItem("Start with Windows", null, (_, _) => ToggleStartup())
         {
             Checked = _settings.StartWithWindows,
@@ -44,78 +45,78 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_toggleItem);
-        menu.Items.Add(new ToolStripMenuItem("Open NotIdle…", null, (_, _) => ShowControlPanel()));
+        menu.Items.Add(new ToolStripMenuItem("Open NotIdle…", null, (_, _) => ShowDashboard()));
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Exit", null, (_, _) => ExitThread()));
 
-        _controlPanel = new ControlPanelForm(_engine, _store, _settings);
+        _dashboard = new DashboardForm(_controller, _settingsManager);
 
         _tray = new NotifyIcon
         {
-            Icon = _icons.For(AppState.Paused),
+            Icon = _icons.For(ActivityState.Disabled),
             Text = "NotIdle",
             Visible = true,
             ContextMenuStrip = menu,
         };
-        _tray.Click += (_, _) => ShowControlPanel();
+        _tray.Click += (_, _) => ShowDashboard();
 
-        _engine.StateChanged += OnEngineStateChanged;
+        _controller.StateChanged += OnStateChanged;
+        _settingsManager.Changed += OnSettingsChanged;
+
         StartupManager.Apply(_settings.StartWithWindows); // Reconcile registry with saved setting.
 
-        if (_settings.Enabled) _engine.Start();
-        Render(_engine.CurrentState);
+        _controller.Start();
+        Render(_controller.CurrentState);
     }
 
-    // ── Engine → UI (marshaled) ──────────────────────────────────────────────
-    private void OnEngineStateChanged(AppState state)
+    // ── Controller / settings → UI (marshaled) ───────────────────────────────
+
+    private void OnStateChanged(ActivityState state)
     {
         if (_marshaller.IsHandleCreated)
             _marshaller.BeginInvoke(() => Render(state));
     }
 
-    private void Render(AppState state)
+    private void OnSettingsChanged(Settings settings)
     {
-        string label = state switch
+        // The registry is reconciled here, in one place, however the setting changed.
+        StartupManager.Apply(settings.StartWithWindows);
+
+        if (!_marshaller.IsHandleCreated) return;
+        _marshaller.BeginInvoke(() =>
         {
-            AppState.Monitoring => "Monitoring",
-            AppState.Idle => "Idle (counting down)",
-            AppState.ActionRunning => "Action running",
-            _ => "Paused",
-        };
+            _settings = settings;
+            _startupItem.Checked = settings.StartWithWindows;
+            Render(_controller.CurrentState);
+        });
+    }
+
+    private void Render(ActivityState state)
+    {
+        string label = state.ToDisplayString();
 
         _statusItem.Text = $"Status: {label}";
-        _toggleItem.Text = _settings.Enabled ? "Pause" : "Resume";
+        _toggleItem.Text = _settings.Enabled ? "Pause keep-awake" : "Resume keep-awake";
         _tray.Icon = _icons.For(state);
         _tray.Text = Truncate(
             $"NotIdle — {label}\n" +
-            $"Idle after {_settings.DescribeThreshold()} · acts {_settings.DescribeAction()}");
+            $"Idle after {_settings.DescribeThreshold()} · every {_settings.DescribeInterval()}");
     }
 
     // ── UI actions ───────────────────────────────────────────────────────────
-    private void ToggleEnabled()
-    {
-        _settings.Enabled = !_settings.Enabled;
-        _store.Save(_settings);
-        _engine.ApplySettings(_settings);
-        Render(_engine.CurrentState);
-    }
 
-    private void ToggleStartup()
-    {
-        _settings.StartWithWindows = !_settings.StartWithWindows;
-        StartupManager.Apply(_settings.StartWithWindows);
-        _startupItem.Checked = _settings.StartWithWindows;
-        _store.Save(_settings);
-    }
+    private void ToggleEnabled() => _settingsManager.Update(s => s.Enabled = !s.Enabled);
 
-    private void ShowControlPanel()
+    private void ToggleStartup() => _settingsManager.Update(s => s.StartWithWindows = !s.StartWithWindows);
+
+    private void ShowDashboard()
     {
-        _controlPanel.Show();
-        if (_controlPanel.WindowState == FormWindowState.Minimized)
-            _controlPanel.WindowState = FormWindowState.Normal;
-        _controlPanel.Activate();
-        _controlPanel.BringToFront();
+        _dashboard.Show();
+        if (_dashboard.WindowState == FormWindowState.Minimized)
+            _dashboard.WindowState = FormWindowState.Normal;
+        _dashboard.Activate();
+        _dashboard.BringToFront();
     }
 
     // Tray tooltips are capped at 127 chars by the shell.
@@ -125,12 +126,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
-            _engine.StateChanged -= OnEngineStateChanged;
-            _controlPanel.Dispose();
+            _controller.StateChanged -= OnStateChanged;
+            _settingsManager.Changed -= OnSettingsChanged;
+            _dashboard.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
             _icons.Dispose();
-            _engine.Dispose();
+            _controller.Dispose();
             _marshaller.Dispose();
         }
         base.Dispose(disposing);
