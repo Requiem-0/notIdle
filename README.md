@@ -40,9 +40,21 @@ climbing past ten minutes, however many keep-awake pulses fired in between.
 |---|---|
 | `Active` | Genuine interaction seen in the last few seconds |
 | `Idle` | No interaction, threshold not yet reached |
-| `KeepAwake` | Threshold passed — holding the session awake |
-| `Suspended` | Standing down: a full-screen, game, or presentation app has focus |
+| `KeepAwake` | Threshold passed — holding the session awake, cursor pulses running |
+| `Suspended` | A full-screen, game, or presentation app has focus: power request held, cursor pulses stopped |
+| `Locked` | Workstation locked: power request held, cursor pulses stopped |
 | `Disabled` | Switched off; normal power policy applies |
+
+Every enabled state holds the power request — including `Suspended` and `Locked`.
+A full-screen film is exactly when the display should stay on, and a locked machine
+should still finish its downloads. What varies between states is whether a **cursor
+pulse** is warranted, and only `KeepAwake` qualifies.
+
+Lock/unlock and sleep/resume are the two moments polling cannot infer on its own:
+no input arrives while locked or asleep, yet a person is unmistakably present the
+instant either ends. `SystemEvents.SessionSwitch` and `PowerModeChanged` feed those
+into the controller, which re-baselines the genuine-activity clock on unlock and on
+resume.
 
 Context awareness comes from `SHQueryUserNotificationState` (the shell's own
 "is now a bad time?" answer, covering presentation mode and exclusive-fullscreen
@@ -61,24 +73,27 @@ D3D) plus a geometry check that catches borderless-fullscreen apps.
 
 ```
 src/
-├─ NotIdle.Core/                  # engine, no UI
-│  ├─ NotIdleController.cs        # the one timer; observe → decide → act
-│  ├─ Monitoring/
-│  │  ├─ UserActivityMonitor.cs   # genuine input, with synthetic attribution
-│  │  └─ WindowMonitor.cs         # foreground app / full-screen state
-│  ├─ IdleStateManager.cs         # Active / Idle / KeepAwake state machine (pure)
-│  ├─ KeepAwakeEngine.cs          # wake request + randomized 1 px pulse
-│  ├─ SettingsManager.cs          # loads, normalizes, persists, notifies
-│  ├─ ActivityState.cs  Settings.cs  NotIdleStatus.cs  Abstractions.cs
-│  ├─ JsonSettingsStore.cs        # %APPDATA%\NotIdle\settings.json (source-gen JSON)
-│  └─ Native/                     # GetLastInputInfo, SendInput, SetThreadExecutionState,
-│                                 #   foreground-window + notification-state probes
-└─ NotIdle.App/                   # WinForms tray
-   ├─ Program.cs                  # entry, single-instance mutex, composition root
-   ├─ TrayApplicationContext.cs   # tray icon + menu
-   ├─ DashboardForm.cs            # dashboard + settings, one window
-   ├─ Theme.cs  TrayIconFactory.cs  MemoryOptimizer.cs
-   └─ Startup/StartupManager.cs   # HKCU Run-key toggle
++- NotIdle.Core/                  # engine, no UI
+|  +- NotIdleController.cs        # the one timer; observe -> decide -> act
+|  +- Monitoring/
+|  |  +- UserActivityMonitor.cs   # genuine input, with synthetic attribution
+|  |  +- WindowMonitor.cs         # foreground app / full-screen state
+|  +- IdleStateManager.cs         # the state machine (pure logic, no I/O)
+|  +- KeepAwakeEngine.cs          # wake request + randomized 1 px pulse
+|  +- SettingsManager.cs          # loads, normalizes, persists, notifies
+|  +- ActivityState.cs  Settings.cs  NotIdleStatus.cs  Abstractions.cs
+|  +- JsonSettingsStore.cs        # %APPDATA%\NotIdle\settings.json (source-gen JSON)
+|  +- Native/                     # GetLastInputInfo, SendInput, SetThreadExecutionState,
+|                                 #   foreground-window + notification-state probes
++- NotIdle.App/                   # WinForms tray
+   +- Program.cs                  # entry, single-instance mutex, composition root
+   +- TrayApplicationContext.cs   # tray icon + menu, SystemEvents wiring
+   +- DashboardForm.cs            # dashboard + settings, one window
+   +- Theme.cs  TrayIconFactory.cs  MemoryOptimizer.cs
+   +- Startup/StartupManager.cs   # HKCU Run-key toggle
+
+tests/
++- NotIdle.Core.Tests/            # xUnit; virtual clock, no real timers
 ```
 
 ## Settings
@@ -91,12 +106,28 @@ src/
 | Return the cursor | on | Explicit restore, so a pulse racing your hand can't displace the pointer |
 | Keep the display on | on | Adds `ES_DISPLAY_REQUIRED` |
 | Pause for full-screen apps | on | Games, presentations, borderless-fullscreen |
+| Auto-off after | 0 (never) | Switches keep-awake off N minutes after it is turned on |
 | Start with Windows | off | Per-user `HKCU\…\Run`; no admin rights |
 
 Note on the wake request: it is held from the moment keep-awake is enabled, not only
 once the threshold expires. Otherwise a threshold longer than the machine's own sleep
 timer would never get the chance to fire. No synthetic input is emitted while you're
 active — only the power request is held.
+
+Auto-off exists because the real failure mode of these tools is leaving one running
+for weeks without noticing. The countdown starts when keep-awake is switched on and
+is *not* extended by activity; saving an unrelated setting does not restart it.
+
+## Tests
+
+```powershell
+dotnet test tests/NotIdle.Core.Tests
+```
+
+48 tests over the pure core. The load-bearing ones assert the invariant the whole
+app rests on: `FakeDesktop` resets its input timestamp on synthetic pulses exactly
+as `GetLastInputInfo` does, then the suite proves ten simulated minutes of pulsing
+leaks zero genuine events and never stalls the genuine-idle clock.
 
 ## Install as a standalone app (recommended)
 
@@ -146,5 +177,4 @@ dotnet run --project src/NotIdle.App    # convenient while coding; Ctrl-C / clos
 
 - Code-sign the exe (avoids SmartScreen/AV friction for an input-injecting tool).
 - Installer via Inno Setup or WiX (adds Add/Remove Programs entry + clean uninstall).
-- Handle session lock/unlock and power suspend/resume.
 - Optional: Win32-`Shell_NotifyIcon` shell for a true-AOT, minimal-footprint build.

@@ -31,6 +31,11 @@ public sealed class NotIdleController : IDisposable
     private Settings _settings;
     private bool _running;
     private bool _disposed;
+    private bool _sessionLocked;
+
+    // Auto-off deadline as a TickCount64 value. 0 means "not armed".
+    private long _autoOffDeadlineTick;
+    private int _autoOffArmedForMinutes;
 
     /// <summary>Raised on every state transition. May fire on a pool thread.</summary>
     public event Action<ActivityState>? StateChanged;
@@ -68,6 +73,7 @@ public sealed class NotIdleController : IDisposable
             // Starting is itself a user action — never fire keep-awake instantly.
             _activity.MarkActiveNow();
             _keepAwake.ResetSchedule(Environment.TickCount64);
+            ArmAutoOff(_settings, Environment.TickCount64);
         }
         Evaluate(); // Publish a state immediately rather than after one poll.
         Arm();
@@ -80,6 +86,7 @@ public sealed class NotIdleController : IDisposable
         {
             if (_disposed) return;
             _running = false;
+            _autoOffDeadlineTick = 0;
             _timer.Change(Timeout.Infinite, Timeout.Infinite);
         }
         _keepAwake.ReleaseWakeLock();
@@ -88,6 +95,48 @@ public sealed class NotIdleController : IDisposable
 
     /// <summary>Flip the master toggle, persisting it through the settings manager.</summary>
     public void SetEnabled(bool enabled) => _settingsManager.Update(s => s.Enabled = enabled);
+
+    // ── Session and power notifications ──────────────────────────────────────
+    // Raised by the shell layer from SystemEvents. Thread-safe; these may arrive
+    // on the dedicated SystemEvents thread.
+
+    /// <summary>The workstation was locked, or the session was disconnected.</summary>
+    public void NotifySessionLocked()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _sessionLocked) return;
+            _sessionLocked = true;
+        }
+        Evaluate();
+    }
+
+    /// <summary>
+    /// The workstation was unlocked or reconnected. Unlocking requires a physical
+    /// person, so it re-baselines the genuine-activity clock.
+    /// </summary>
+    public void NotifySessionUnlocked()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _sessionLocked = false;
+        }
+        _activity.MarkActiveNow();
+        Evaluate();
+    }
+
+    /// <summary>
+    /// The machine resumed from sleep. Without this the genuine-idle clock would
+    /// report hours of inactivity even though someone just physically woke the box.
+    /// </summary>
+    public void NotifyResumedFromSleep()
+    {
+        lock (_gate) { if (_disposed) return; }
+        _activity.MarkActiveNow();
+        _keepAwake.ResetSchedule(Environment.TickCount64);
+        Evaluate();
+    }
 
     /// <summary>Emit one keep-awake pulse right now, for the UI's Test action.</summary>
     public void TriggerTestAction()
@@ -112,14 +161,21 @@ public sealed class NotIdleController : IDisposable
     {
         Settings settings;
         bool running;
+        long autoOffDeadline;
         lock (_gate)
         {
             settings = _settings;
             running = _running;
+            autoOffDeadline = _autoOffDeadlineTick;
         }
 
         long now = Environment.TickCount64;
         ForegroundWindow window = _windows.Current;
+
+        bool autoOffArmed = running && autoOffDeadline != 0;
+        TimeSpan untilAutoOff = autoOffArmed && autoOffDeadline > now
+            ? TimeSpan.FromMilliseconds(autoOffDeadline - now)
+            : TimeSpan.Zero;
 
         return new NotIdleStatus(
             Enabled: settings.Enabled && running,
@@ -133,21 +189,42 @@ public sealed class NotIdleController : IDisposable
             CurrentIntervalSeconds: _keepAwake.CurrentIntervalSeconds,
             TimeUntilNextAction: _keepAwake.TimeUntilNextPulse(now),
             ForegroundApp: string.IsNullOrEmpty(window.Process) ? "—" : window.Process,
-            WakeLockHeld: _keepAwake.WakeLockHeld);
+            WakeLockHeld: _keepAwake.WakeLockHeld,
+            AutoOffArmed: autoOffArmed,
+            TimeUntilAutoOff: untilAutoOff);
     }
 
     private void OnSettingsChanged(Settings settings)
     {
-        bool shouldRun;
+        bool wasRunning;
         lock (_gate)
         {
             if (_disposed) return;
+            wasRunning = _running;
             _settings = settings;
-            shouldRun = settings.Enabled;
         }
 
-        if (shouldRun) Start();
-        else Stop();
+        if (!settings.Enabled) { Stop(); return; }
+
+        if (!wasRunning)
+        {
+            Start(); // arms auto-off from scratch
+        }
+        else if (settings.AutoOffMinutes != _autoOffArmedForMinutes)
+        {
+            // Only re-arm when the auto-off value itself changed, so saving an
+            // unrelated setting does not silently restart the countdown.
+            lock (_gate) ArmAutoOff(settings, Environment.TickCount64);
+        }
+    }
+
+    // Caller must hold _gate.
+    private void ArmAutoOff(Settings settings, long nowTick)
+    {
+        _autoOffArmedForMinutes = settings.AutoOffMinutes;
+        _autoOffDeadlineTick = settings.AutoOffMinutes > 0
+            ? nowTick + (settings.AutoOffMinutes * 60_000L)
+            : 0;
     }
 
     private void OnTick(object? _)
@@ -167,53 +244,73 @@ public sealed class NotIdleController : IDisposable
     }
 
     /// <summary>
-    /// One full observe → decide → act cycle. Kept outside the controller lock's
-    /// critical section for the acting part so a slow syscall can't stall
-    /// <see cref="GetStatus"/> on the UI thread.
+    /// One full observe → decide → act cycle. The controller lock is taken only to
+    /// read shared fields, so a slow syscall cannot stall <see cref="GetStatus"/>
+    /// on the UI thread.
     /// </summary>
     private void Evaluate()
     {
         Settings settings;
+        bool locked;
         lock (_gate)
         {
             if (_disposed || !_running) return;
             settings = _settings;
+            locked = _sessionLocked;
+
+            if (_autoOffDeadlineTick != 0 && Environment.TickCount64 >= _autoOffDeadlineTick)
+            {
+                _autoOffDeadlineTick = 0;
+                // Route through the settings manager so the tray, the dashboard and
+                // the persisted file all follow. Off-thread because that re-enters
+                // OnSettingsChanged -> Stop(), which would otherwise run inside this
+                // timer callback while it is still holding the gate.
+                _ = Task.Run(() => _settingsManager.Update(s => s.Enabled = false));
+                return;
+            }
         }
 
         long now = Environment.TickCount64;
 
         // ── Observe ──────────────────────────────────────────────────────────
-        ForegroundWindow window = _windows.Poll();
+        // A locked session has no meaningful foreground window, and probing the
+        // secure desktop just burns syscalls.
+        ForegroundWindow window = locked ? ForegroundWindow.Unknown : _windows.Poll();
         ActivitySample sample = _activity.Sample(window.Handle, now);
         bool standDown = settings.PauseWhenFullScreen && window.WantsUninterrupted;
 
         // ── Decide ───────────────────────────────────────────────────────────
-        ActivityState state = _stateMachine.Evaluate(
-            settings.Enabled, standDown, sample.TimeSinceGenuineInput, settings.IdleThreshold, now);
+        var inputs = new StateInputs(
+            Enabled: settings.Enabled,
+            Locked: locked,
+            StandDown: standDown,
+            SinceGenuineInput: sample.TimeSinceGenuineInput,
+            IdleThreshold: settings.IdleThreshold);
+
+        ActivityState state = _stateMachine.Evaluate(inputs, now);
 
         // ── Act ──────────────────────────────────────────────────────────────
-        switch (state)
+        if (state == ActivityState.Disabled)
         {
-            case ActivityState.KeepAwake:
-                _keepAwake.HoldWakeLock(settings.KeepDisplayOn);
-                if (_keepAwake.TryPulse(now, settings, out CursorPoint cursorAfter))
-                    _activity.NoteSyntheticInput(now, cursorAfter);
-                break;
+            _keepAwake.ReleaseWakeLock();
+            _keepAwake.ResetSchedule(now);
+            return;
+        }
 
-            case ActivityState.Active:
-            case ActivityState.Idle:
-                // Hold the wake lock from the moment keep-awake is switched on, not
-                // only once the threshold expires — otherwise a threshold longer
-                // than the machine's sleep timer would never get the chance to fire.
-                // No synthetic input is emitted here: the user is at the keyboard.
-                _keepAwake.HoldWakeLock(settings.KeepDisplayOn);
-                _keepAwake.ResetSchedule(now);
-                break;
+        // Every enabled state holds the power request — notably including Suspended
+        // and Locked. A full-screen film is exactly when the display should stay on,
+        // and a locked machine should still finish its downloads. What varies
+        // between states is whether a cursor pulse is warranted.
+        _keepAwake.HoldWakeLock(settings.KeepDisplayOn);
 
-            default: // Disabled / Suspended
-                _keepAwake.ReleaseWakeLock();
-                _keepAwake.ResetSchedule(now);
-                break;
+        if (state.AllowsCursorPulse())
+        {
+            if (_keepAwake.TryPulse(now, settings, out CursorPoint cursorAfter))
+                _activity.NoteSyntheticInput(now, cursorAfter);
+        }
+        else
+        {
+            _keepAwake.ResetSchedule(now);
         }
     }
 

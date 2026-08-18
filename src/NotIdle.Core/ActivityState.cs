@@ -19,10 +19,18 @@ public enum ActivityState
     KeepAwake,
 
     /// <summary>
-    /// Enabled, but standing down because the foreground app is full-screen or the
-    /// system reports presentation/game mode.
+    /// Enabled, but standing down on cursor pulses because the foreground app is
+    /// full-screen or the system reports presentation/game mode. The power request
+    /// is still held: full screen is exactly when the display should stay on.
     /// </summary>
     Suspended,
+
+    /// <summary>
+    /// The workstation is locked. The power request is held so unattended work
+    /// keeps running, but cursor pulses are pointless — the session is already
+    /// locked — and the secure desktop refuses cursor queries anyway.
+    /// </summary>
+    Locked,
 }
 
 /// <summary>Display helpers kept out of the enum so <see cref="ActivityState"/> stays a plain value.</summary>
@@ -33,7 +41,20 @@ public static class ActivityStateText
         ActivityState.Active => "Active",
         ActivityState.Idle => "Idle",
         ActivityState.KeepAwake => "Keep Awake",
-        ActivityState.Suspended => "Paused (full screen)",
+        ActivityState.Suspended => "Full screen",
+        ActivityState.Locked => "Locked",
         _ => "Off",
     };
+
+    /// <summary>
+    /// States in which NotIdle is holding the session awake on the user's behalf.
+    /// Used for the "total keep-awake time" statistic — Active and Idle don't count,
+    /// because the user is present and the power request is merely precautionary.
+    /// </summary>
+    public static bool IsHoldingAwake(this ActivityState state) =>
+        state is ActivityState.KeepAwake or ActivityState.Locked;
+
+    /// <summary>States in which a cursor pulse would be useful. Only one qualifies.</summary>
+    public static bool AllowsCursorPulse(this ActivityState state) =>
+        state is ActivityState.KeepAwake;
 }

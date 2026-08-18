@@ -2,10 +2,23 @@ using System.Threading;
 
 namespace NotIdle.Core;
 
+/// <summary>Everything the state machine needs to decide, gathered at one instant.</summary>
+/// <param name="Enabled">Master keep-awake toggle.</param>
+/// <param name="Locked">The workstation is locked.</param>
+/// <param name="StandDown">Context says don't pulse (full screen / presenting / gaming).</param>
+/// <param name="SinceGenuineInput">Time since real user interaction.</param>
+/// <param name="IdleThreshold">Configured idle threshold.</param>
+public readonly record struct StateInputs(
+    bool Enabled,
+    bool Locked,
+    bool StandDown,
+    TimeSpan SinceGenuineInput,
+    TimeSpan IdleThreshold);
+
 /// <summary>
-/// The state machine: turns "how long since genuine input" into
-/// Active / Idle / Keep-Awake, and accumulates how long keep-awake has been
-/// engaged.
+/// The state machine: turns "how long since genuine input" plus session context
+/// into Active / Idle / Keep-Awake / Suspended / Locked, and accumulates how long
+/// keep-awake has been engaged.
 ///
 /// Pure logic — no timers, no syscalls, no I/O — so every transition is
 /// reproducible from its inputs.
@@ -21,7 +34,7 @@ public sealed class IdleStateManager
     private readonly Lock _gate = new();
 
     private ActivityState _state = ActivityState.Disabled;
-    private long _keepAwakeEnteredTick;
+    private long _holdingSinceTick;
     private TimeSpan _completedKeepAwake;
     private int _keepAwakeSessions;
 
@@ -39,7 +52,7 @@ public sealed class IdleStateManager
         get { lock (_gate) return _keepAwakeSessions; }
     }
 
-    /// <summary>Total time spent in <see cref="ActivityState.KeepAwake"/>, including the current run.</summary>
+    /// <summary>Total time spent holding the session awake, including the current run.</summary>
     public TimeSpan TotalKeepAwakeDuration => TotalKeepAwakeAt(Environment.TickCount64);
 
     /// <summary>Same as <see cref="TotalKeepAwakeDuration"/> but sampled at a caller-supplied tick.</summary>
@@ -47,44 +60,32 @@ public sealed class IdleStateManager
     {
         lock (_gate)
         {
-            if (_state != ActivityState.KeepAwake) return _completedKeepAwake;
-            return _completedKeepAwake + TimeSpan.FromMilliseconds(nowTick - _keepAwakeEnteredTick);
+            if (!_state.IsHoldingAwake()) return _completedKeepAwake;
+            return _completedKeepAwake + TimeSpan.FromMilliseconds(nowTick - _holdingSinceTick);
         }
     }
 
-    /// <summary>
-    /// Advance the machine one step.
-    /// </summary>
-    /// <param name="enabled">Master keep-awake toggle.</param>
-    /// <param name="standDown">Context says don't act (full screen / presenting).</param>
-    /// <param name="sinceGenuineInput">Time since real user interaction.</param>
-    /// <param name="idleThreshold">Configured idle threshold.</param>
-    /// <param name="nowTick">Monotonic tick for duration accounting.</param>
-    public ActivityState Evaluate(
-        bool enabled,
-        bool standDown,
-        TimeSpan sinceGenuineInput,
-        TimeSpan idleThreshold,
-        long nowTick)
+    /// <summary>Advance the machine one step.</summary>
+    public ActivityState Evaluate(in StateInputs inputs, long nowTick)
     {
-        ActivityState next = Classify(enabled, standDown, sinceGenuineInput, idleThreshold);
+        ActivityState next = Classify(inputs);
         Transition(next, nowTick);
         return next;
     }
 
-    private static ActivityState Classify(
-        bool enabled,
-        bool standDown,
-        TimeSpan sinceGenuineInput,
-        TimeSpan idleThreshold)
+    private static ActivityState Classify(in StateInputs inputs)
     {
-        if (!enabled) return ActivityState.Disabled;
-        if (standDown) return ActivityState.Suspended;
-        if (sinceGenuineInput >= idleThreshold) return ActivityState.KeepAwake;
+        if (!inputs.Enabled) return ActivityState.Disabled;
 
-        TimeSpan activeWindow = idleThreshold / 2;
+        // Lock wins over everything: with the session locked there is no meaningful
+        // foreground app, and the user is away by definition.
+        if (inputs.Locked) return ActivityState.Locked;
+        if (inputs.StandDown) return ActivityState.Suspended;
+        if (inputs.SinceGenuineInput >= inputs.IdleThreshold) return ActivityState.KeepAwake;
+
+        TimeSpan activeWindow = inputs.IdleThreshold / 2;
         if (activeWindow > MaxActiveWindow) activeWindow = MaxActiveWindow;
-        return sinceGenuineInput < activeWindow ? ActivityState.Active : ActivityState.Idle;
+        return inputs.SinceGenuineInput < activeWindow ? ActivityState.Active : ActivityState.Idle;
     }
 
     /// <summary>Force the machine back to <see cref="ActivityState.Disabled"/>, closing any open run.</summary>
@@ -96,8 +97,8 @@ public sealed class IdleStateManager
         lock (_gate)
         {
             _completedKeepAwake = TimeSpan.Zero;
-            _keepAwakeSessions = _state == ActivityState.KeepAwake ? 1 : 0;
-            _keepAwakeEnteredTick = Environment.TickCount64;
+            _keepAwakeSessions = _state.IsHoldingAwake() ? 1 : 0;
+            _holdingSinceTick = Environment.TickCount64;
         }
     }
 
@@ -109,13 +110,17 @@ public sealed class IdleStateManager
             if (_state == next) return;
             previous = _state;
 
-            if (previous == ActivityState.KeepAwake)
-                _completedKeepAwake += TimeSpan.FromMilliseconds(nowTick - _keepAwakeEnteredTick);
+            bool wasHolding = previous.IsHoldingAwake();
+            bool isHolding = next.IsHoldingAwake();
 
-            if (next == ActivityState.KeepAwake)
+            if (wasHolding)
+                _completedKeepAwake += TimeSpan.FromMilliseconds(nowTick - _holdingSinceTick);
+
+            if (isHolding)
             {
-                _keepAwakeEnteredTick = nowTick;
-                _keepAwakeSessions++;
+                _holdingSinceTick = nowTick;
+                // KeepAwake -> Locked is one continuous run, not a second session.
+                if (!wasHolding) _keepAwakeSessions++;
             }
 
             _state = next;

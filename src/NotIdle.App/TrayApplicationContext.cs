@@ -1,4 +1,5 @@
 using System.Windows.Forms;
+using Microsoft.Win32;
 using NotIdle.App.Startup;
 using NotIdle.Core;
 
@@ -66,6 +67,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         StartupManager.Apply(_settings.StartWithWindows); // Reconcile registry with saved setting.
 
+        // Lock/unlock and sleep/resume are the two moments the polling loop cannot
+        // infer on its own: no input arrives while locked or asleep, yet a person
+        // is unmistakably present the instant either one ends.
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
         _controller.Start();
         Render(_controller.CurrentState);
     }
@@ -104,6 +111,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
             $"Idle after {_settings.DescribeThreshold()} · every {_settings.DescribeInterval()}");
     }
 
+    // ── Session / power events ───────────────────────────────────────────────
+    // These arrive on the dedicated SystemEvents thread; the controller is
+    // thread-safe, so they are forwarded straight through.
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        switch (e.Reason)
+        {
+            case SessionSwitchReason.SessionLock:
+            case SessionSwitchReason.SessionLogoff:
+            case SessionSwitchReason.ConsoleDisconnect:
+            case SessionSwitchReason.RemoteDisconnect:
+                _controller.NotifySessionLocked();
+                break;
+
+            case SessionSwitchReason.SessionUnlock:
+            case SessionSwitchReason.SessionLogon:
+            case SessionSwitchReason.ConsoleConnect:
+            case SessionSwitchReason.RemoteConnect:
+                _controller.NotifySessionUnlocked();
+                break;
+        }
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume) _controller.NotifyResumedFromSleep();
+    }
+
     // ── UI actions ───────────────────────────────────────────────────────────
 
     private void ToggleEnabled() => _settingsManager.Update(s => s.Enabled = !s.Enabled);
@@ -126,6 +162,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             _controller.StateChanged -= OnStateChanged;
             _settingsManager.Changed -= OnSettingsChanged;
             _dashboard.Dispose();

@@ -16,6 +16,8 @@ namespace NotIdle.Core;
 /// <param name="TimeUntilNextAction">Countdown to the next pulse.</param>
 /// <param name="ForegroundApp">Executable name of the focused app.</param>
 /// <param name="WakeLockHeld">Whether the OS keep-awake request is currently held.</param>
+/// <param name="AutoOffArmed">Whether an auto-off deadline is running.</param>
+/// <param name="TimeUntilAutoOff">Countdown to auto-off; zero when not armed.</param>
 public sealed record NotIdleStatus(
     bool Enabled,
     ActivityState State,
@@ -28,9 +30,11 @@ public sealed record NotIdleStatus(
     int CurrentIntervalSeconds,
     TimeSpan TimeUntilNextAction,
     string ForegroundApp,
-    bool WakeLockHeld)
+    bool WakeLockHeld,
+    bool AutoOffArmed,
+    TimeSpan TimeUntilAutoOff)
 {
     public static readonly NotIdleStatus Empty = new(
         false, ActivityState.Disabled, TimeSpan.Zero, TimeSpan.Zero,
-        0, 0, 0, "—", 0, TimeSpan.Zero, "—", false);
+        0, 0, 0, "—", 0, TimeSpan.Zero, "—", false, false, TimeSpan.Zero);
 }

@@ -31,12 +31,14 @@ internal sealed class DashboardForm : Form
     private readonly Label _nextAction = NewValue();
     private readonly Label _foregroundApp = NewValue();
     private readonly Label _wakeLock = NewValue();
+    private readonly Label _autoOff = NewValue();
 
     // Settings
     private readonly NumericUpDown _threshold = new();
     private readonly ComboBox _thresholdUnit = new();
     private readonly NumericUpDown _minInterval = new();
     private readonly NumericUpDown _maxInterval = new();
+    private readonly NumericUpDown _autoOffMinutes = new();
     private readonly CheckBox _restoreCursor = new();
     private readonly CheckBox _keepDisplayOn = new();
     private readonly CheckBox _pauseFullScreen = new();
@@ -56,7 +58,7 @@ internal sealed class DashboardForm : Form
         MinimizeBox = false;
         ShowInTaskbar = true;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(520, 500);
+        ClientSize = new Size(520, 524);
         BackColor = Theme.Canvas;
         Font = Theme.Body;
 
@@ -177,6 +179,7 @@ internal sealed class DashboardForm : Form
         AddRow(table, "Next action in", _nextAction);
         AddRow(table, "Focused app", _foregroundApp);
         AddRow(table, "System wake request", _wakeLock);
+        AddRow(table, "Auto-off in", _autoOff);
 
         return Card(table);
     }
@@ -233,6 +236,11 @@ internal sealed class DashboardForm : Form
             if (_minInterval.Value > _maxInterval.Value) _minInterval.Value = _maxInterval.Value;
         };
 
+        _autoOffMinutes.Minimum = 0;
+        _autoOffMinutes.Maximum = 1440;
+        _autoOffMinutes.Increment = 30;
+        _autoOffMinutes.Width = 70;
+
         Configure(_restoreCursor, "Return the cursor to its original position");
         Configure(_keepDisplayOn, "Keep the display on, not just the machine");
         Configure(_pauseFullScreen, "Pause during full-screen, game, or presentation apps");
@@ -258,6 +266,7 @@ internal sealed class DashboardForm : Form
 
         AddRow(table, "Minimum interval (s)", _minInterval);
         AddRow(table, "Maximum interval (s)", _maxInterval);
+        AddRow(table, "Auto-off after (min, 0 = never)", _autoOffMinutes);
 
         AddFullWidth(table, _restoreCursor);
         AddFullWidth(table, _keepDisplayOn);
@@ -332,6 +341,7 @@ internal sealed class DashboardForm : Form
             : "—";
         _foregroundApp.Text = s.ForegroundApp;
         _wakeLock.Text = s.WakeLockHeld ? "Held" : "Released";
+        _autoOff.Text = s.AutoOffArmed ? FormatSpan(s.TimeUntilAutoOff) : "never";
     }
 
     private static string DescribeState(NotIdleStatus s) => s.State switch
@@ -341,7 +351,8 @@ internal sealed class DashboardForm : Form
         ActivityState.KeepAwake => s.CurrentIntervalSeconds > 0
             ? $"Holding the session awake · {s.CurrentIntervalSeconds}s interval"
             : "Holding the session awake.",
-        ActivityState.Suspended => "Standing down: a full-screen app has focus.",
+        ActivityState.Suspended => "Full-screen app in focus — display held on, no cursor action.",
+        ActivityState.Locked => "Session locked — display held on, no cursor action.",
         _ => "Keep-awake is off. Normal power settings apply.",
     };
 
@@ -365,12 +376,13 @@ internal sealed class DashboardForm : Form
         draft.KeepDisplayOn = _keepDisplayOn.Checked;
         draft.PauseWhenFullScreen = _pauseFullScreen.Checked;
         draft.StartWithWindows = _startWithWindows.Checked;
+        draft.AutoOffMinutes = (int)_autoOffMinutes.Value;
 
         Settings applied = _settingsManager.Apply(draft);
 
         // Reflect back anything Normalize() clamped.
         LoadSettingsInto(applied);
-        ShowConfirm($"Saved · idle after {applied.DescribeThreshold()}, every {applied.DescribeInterval()}");
+        ShowConfirm($"Saved · idle after {applied.DescribeThreshold()}, every {applied.DescribeInterval()}, auto-off {applied.DescribeAutoOff()}");
     }
 
     private void OnSettingsChanged(Settings settings)
@@ -392,6 +404,7 @@ internal sealed class DashboardForm : Form
         _keepDisplayOn.Checked = s.KeepDisplayOn;
         _pauseFullScreen.Checked = s.PauseWhenFullScreen;
         _startWithWindows.Checked = s.StartWithWindows;
+        _autoOffMinutes.Value = Math.Clamp(s.AutoOffMinutes, (int)_autoOffMinutes.Minimum, (int)_autoOffMinutes.Maximum);
     }
 
     // Picks minutes when the stored value is a whole number of minutes, else seconds.

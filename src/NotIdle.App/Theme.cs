@@ -30,6 +30,7 @@ internal static class Theme
         ActivityState.Idle => Color.FromArgb(0xD8, 0x99, 0x14),        // amber  — counting down
         ActivityState.KeepAwake => Color.FromArgb(0x2D, 0x6C, 0xDF),   // blue   — holding awake
         ActivityState.Suspended => Color.FromArgb(0x8B, 0x5C, 0xF6),   // violet — standing down
+        ActivityState.Locked => Color.FromArgb(0x4B, 0x5D, 0x73),      // slate  — session locked
         _ => Color.FromArgb(0x8A, 0x92, 0x9B),                          // grey   — off
     };
 

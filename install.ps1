@@ -44,11 +44,19 @@ if ($Uninstall) {
 
 Write-Host "Publishing self-contained single-file exe (this can take a minute)..." -ForegroundColor Cyan
 $publishDir = Join-Path $Root 'artifacts\publish'
-dotnet publish $Project -c Release -r win-x64 --self-contained true `
+$publishLog = dotnet publish $Project -c Release -r win-x64 --self-contained true `
     /p:PublishSingleFile=true /p:PublishReadyToRun=true `
     /p:EnableCompressionInSingleFile=true /p:DebugType=none `
-    -o $publishDir | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+    -o $publishDir 2>&1
+if ($LASTEXITCODE -ne 0) {
+    # Do not swallow the diagnostics: a bare "publish failed" is unactionable.
+    $publishLog | ForEach-Object { Write-Host $_ }
+    Write-Host ""
+    Write-Host "Publish failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    Write-Host "If another build or 'dotnet test' is running against this repo, wait for it" -ForegroundColor Yellow
+    Write-Host "to finish and re-run: concurrent MSBuild processes lock the same output." -ForegroundColor Yellow
+    throw "publish failed"
+}
 
 Stop-Running  # release the installed exe if a previous copy is running
 
