@@ -80,6 +80,9 @@ internal sealed class DashboardForm : Form
     private readonly ComboBox _autoClickButton = new();
     private readonly NumericUpDown _autoClickInterval = new();
     private readonly CheckBox _autoClickDouble = new();
+    private readonly TextBox _autoClickPoints = new();
+    private readonly Label _autoClickPointsCaption = new();
+    private readonly NumericUpDown _autoClickTravelSpeed = new();
 
     // Settings
     private readonly CheckBox _adaptiveMode = new();
@@ -454,14 +457,35 @@ internal sealed class DashboardForm : Form
 
         Configure(_autoClickDouble, "Send a double click");
 
+        _autoClickPoints.Multiline = true;
+        _autoClickPoints.Height = 52;
+        _autoClickPoints.Width = 210;
+        _autoClickPoints.ScrollBars = ScrollBars.Vertical;
+        _autoClickPoints.Margin = new Padding(0, 4, 0, 4);
+        _autoClickPoints.TextChanged += (_, _) => SyncEnabledState();
+
+        _autoClickPointsCaption.Text = "Click points (x,y per pair)";
+        _autoClickPointsCaption.AutoSize = true;
+        _autoClickPointsCaption.ForeColor = Theme.Muted;
+        _autoClickPointsCaption.Anchor = AnchorStyles.Left;
+        _autoClickPointsCaption.Margin = new Padding(0, 5, 0, 5);
+
+        ConfigureSpinner(_autoClickTravelSpeed, Settings.MinPathSpeed, Settings.MaxPathSpeed, 70);
+        _autoClickTravelSpeed.Increment = 50;
+
         TableLayoutPanel table = TwoColumnTable();
         AddFullWidth(table, _autoClickEnabled);
         AddRow(table, "Button", _autoClickButton);
         AddRow(table, "Interval (ms)", _autoClickInterval);
+        AddRow(table, _autoClickPointsCaption, _autoClickPoints);
+        AddRow(table, "Travel speed (px per second)", _autoClickTravelSpeed);
         AddFullWidth(table, _autoClickDouble);
+        AddFullWidth(table, Hint("Leave the points empty to click wherever the pointer already is. " +
+                                 "Give it a list and it cycles them: travel to the next point at the " +
+                                 "speed above, click, wait the interval, move on."));
         AddFullWidth(table, Hint("Clicks land in whatever is under the pointer, so this one only " +
                                  "runs once the idle threshold has passed, and stops the instant " +
-                                 "the pointer moves. NotIdle never turns it on by itself."));
+                                 "you move the mouse yourself. NotIdle never turns it on by itself."));
         return SizedCard(table);
     }
 
@@ -632,16 +656,30 @@ internal sealed class DashboardForm : Form
         draft.AutoClickButton = Buttons[Math.Max(0, _autoClickButton.SelectedIndex)];
         draft.AutoClickIntervalMs = (int)_autoClickInterval.Value;
         draft.AutoClickDoubleClick = _autoClickDouble.Checked;
+        draft.AutoClickPoints = _autoClickPoints.Text;
+        draft.AutoClickTravelSpeed = (int)_autoClickTravelSpeed.Value;
 
         bool wantedPath = _pathEnabled.Checked;
+        bool typedClickPoints = _autoClickPoints.Text.Trim().Length > 0;
         Settings applied = _settingsManager.Apply(draft);
 
         // Reflect back anything Normalize() clamped or refused.
         LoadSettingsInto(applied);
 
-        ShowConfirm(wantedPath && !applied.PathEnabled
-            ? "Saved, but path movement was switched off — the custom list needs at least two x,y points."
-            : $"Saved · {applied.DescribeActions()} after {applied.DescribeThreshold()} idle, auto-off {applied.DescribeAutoOff()}");
+        ShowConfirm(Outcome(applied, wantedPath, typedClickPoints));
+    }
+
+    // Normalize() silently drops configuration it cannot use, which would otherwise
+    // look like the save having been ignored. Say which part went and why.
+    private static string Outcome(Settings applied, bool wantedPath, bool typedClickPoints)
+    {
+        if (wantedPath && !applied.PathEnabled)
+            return "Saved, but path movement was switched off — the custom list needs at least two x,y points.";
+
+        if (typedClickPoints && applied.AutoClickPoints.Length == 0)
+            return "Saved, but the click points were dropped — none of them parsed as an x,y pair.";
+
+        return $"Saved · {applied.DescribeActions()} after {applied.DescribeThreshold()} idle, auto-off {applied.DescribeAutoOff()}";
     }
 
     private void OnSettingsChanged(Settings settings)
@@ -682,6 +720,8 @@ internal sealed class DashboardForm : Form
         _autoClickButton.SelectedIndex = Math.Max(0, Array.IndexOf(Buttons, s.AutoClickButton));
         SetValue(_autoClickInterval, s.AutoClickIntervalMs);
         _autoClickDouble.Checked = s.AutoClickDoubleClick;
+        _autoClickPoints.Text = s.AutoClickPoints;
+        SetValue(_autoClickTravelSpeed, s.AutoClickTravelSpeed);
 
         SyncEnabledState();
     }
@@ -703,6 +743,9 @@ internal sealed class DashboardForm : Form
 
         bool click = _autoClickEnabled.Checked;
         _autoClickButton.Enabled = _autoClickInterval.Enabled = _autoClickDouble.Enabled = click;
+        _autoClickPoints.Enabled = _autoClickPointsCaption.Enabled = click;
+        // Travel speed only means anything when there is somewhere to travel to.
+        _autoClickTravelSpeed.Enabled = click && _autoClickPoints.Text.Trim().Length > 0;
     }
 
     // Picks minutes when the stored value is a whole number of minutes, else seconds.

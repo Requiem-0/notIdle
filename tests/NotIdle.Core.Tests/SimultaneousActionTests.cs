@@ -267,6 +267,199 @@ public class SimultaneousActionTests
     }
 
     [Fact]
+    public void TestClickTravelsToAPointWhenOneIsConfigured()
+    {
+        // The test button has to exercise the real gesture, or it proves nothing
+        // about the configuration it claims to be testing.
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings settings = Normalized(new Settings
+            {
+                AutoClickEnabled = true,
+                AutoClickPoints = "1200,700",
+                AutoClickTravelSpeed = 8000,
+                AdaptiveMode = false,
+            });
+
+            var clickedAt = new List<CursorPoint>();
+            desktop.OnClick = p => { lock (clickedAt) clickedAt.Add(p); };
+
+            engine.ClickNow(desktop.Now, settings);
+
+            Assert.True(WaitUntil(() => { lock (clickedAt) return clickedAt.Count == 1; }, 5000));
+            lock (clickedAt) Assert.Equal(new CursorPoint(1200, 700), clickedAt[0]);
+        }
+    }
+
+    [Fact]
+    public void TestClickStaysPutWhenNoPointsAreConfigured()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings settings = Normalized(new Settings { AutoClickEnabled = true, AdaptiveMode = false });
+            CursorPoint parked = desktop.Cursor;
+
+            engine.ClickNow(desktop.Now, settings);
+
+            Assert.Equal(1, engine.ClickCount);
+            Assert.Equal(0, desktop.MoveCount);
+            Assert.Equal(parked, desktop.Cursor);
+        }
+    }
+
+    [Fact]
+    public void ClickPointsAreVisitedInOrderAndCycled()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings settings = Normalized(new Settings
+            {
+                AutoClickEnabled = true,
+                AutoClickIntervalMs = 10,
+                AutoClickPoints = "100,100 700,100 700,500",
+                AutoClickTravelSpeed = 8000,
+                AdaptiveMode = false,
+            });
+
+            var clickedAt = new List<CursorPoint>();
+            desktop.OnClick = p => { lock (clickedAt) clickedAt.Add(p); };
+
+            engine.SetAutoClickActive(true, settings);
+            Assert.True(WaitUntil(() => { lock (clickedAt) return clickedAt.Count >= 6; }, 8000));
+            engine.SetAutoClickActive(false, settings);
+
+            List<CursorPoint> seen;
+            lock (clickedAt) seen = clickedAt.Take(6).ToList();
+
+            Assert.Equal(
+                [new(100, 100), new(700, 100), new(700, 500), new(100, 100), new(700, 100), new(700, 500)],
+                seen);
+        }
+    }
+
+    [Fact]
+    public void ClickPointsMoveThePointerInStepsRatherThanTeleporting()
+    {
+        // "Depending on the speed setup": a slow speed has to produce many small
+        // moves, not one jump, or the travel is not really travel.
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings settings = Normalized(new Settings
+            {
+                AutoClickEnabled = true,
+                AutoClickIntervalMs = 10,
+                AutoClickPoints = "100,100 900,100",
+                AutoClickTravelSpeed = 400,
+                AdaptiveMode = false,
+            });
+
+            engine.SetAutoClickActive(true, settings);
+            Assert.True(WaitUntil(() => engine.ClickCount >= 2, 10_000));
+            engine.SetAutoClickActive(false, settings);
+
+            // 800 px at 400 px/s is ~2 s of frames; even allowing for scheduling
+            // slack that is dozens of moves, nowhere near a single hop.
+            Assert.True(desktop.MoveCount > 20, $"expected interpolated travel, saw {desktop.MoveCount} moves");
+        }
+    }
+
+    [Fact]
+    public void ClickPointsHonourTheTravelSpeed()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings fast = Normalized(new Settings
+            {
+                AutoClickEnabled = true,
+                AutoClickIntervalMs = 10,
+                AutoClickPoints = "100,100 900,100",
+                AutoClickTravelSpeed = 8000,
+                AdaptiveMode = false,
+            });
+
+            engine.SetAutoClickActive(true, fast);
+            Assert.True(WaitUntil(() => engine.ClickCount >= 2, 10_000));
+            engine.SetAutoClickActive(false, fast);
+            int fastMoves = desktop.MoveCount;
+
+            (FakeDesktop slowDesktop, KeepAwakeEngine slowEngine) = New();
+            using (slowEngine)
+            {
+                Settings slow = Normalized(new Settings
+                {
+                    AutoClickEnabled = true,
+                    AutoClickIntervalMs = 10,
+                    AutoClickPoints = "100,100 900,100",
+                    AutoClickTravelSpeed = 400,
+                    AdaptiveMode = false,
+                });
+
+                slowEngine.SetAutoClickActive(true, slow);
+                Assert.True(WaitUntil(() => slowEngine.ClickCount >= 2, 10_000));
+                slowEngine.SetAutoClickActive(false, slow);
+
+                Assert.True(slowDesktop.MoveCount > fastMoves * 2,
+                    $"slow travel ({slowDesktop.MoveCount} moves) should need far more frames than fast ({fastMoves})");
+            }
+        }
+    }
+
+    [Fact]
+    public void ClickPointTravelStopsWhenTheUserTakesTheMouse()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings settings = Normalized(new Settings
+            {
+                AutoClickEnabled = true,
+                AutoClickIntervalMs = 10,
+                AutoClickPoints = "100,100 1800,900",
+                AutoClickTravelSpeed = 150, // slow, so there is a long window to interrupt
+                AdaptiveMode = false,
+            });
+
+            engine.SetAutoClickActive(true, settings);
+            Assert.True(WaitUntil(() => desktop.MoveCount > 5, 5000));
+
+            // A real hand, somewhere the clicker did not put the pointer.
+            desktop.Cursor = new CursorPoint(17, 23);
+
+            Assert.True(WaitUntil(() => !engine.IsAutoClickActive, 5000));
+            Assert.Equal(1, engine.ClickInterruptions);
+        }
+    }
+
+    [Fact]
+    public void WithoutPointsTheClickerNeverMovesThePointer()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine) = New();
+        using (engine)
+        {
+            Settings settings = Normalized(new Settings
+            {
+                AutoClickEnabled = true,
+                AutoClickIntervalMs = 20,
+                AutoClickPoints = "",
+                AdaptiveMode = false,
+            });
+
+            CursorPoint parked = desktop.Cursor;
+            engine.SetAutoClickActive(true, settings);
+            Assert.True(WaitUntil(() => engine.ClickCount >= 4, 3000));
+            engine.SetAutoClickActive(false, settings);
+
+            Assert.Equal(0, desktop.MoveCount);
+            Assert.Equal(parked, desktop.Cursor);
+        }
+    }
+
+    [Fact]
     public void AutoClickerIsNeverArmedWithoutTheSetting()
     {
         (FakeDesktop _, KeepAwakeEngine engine) = New();

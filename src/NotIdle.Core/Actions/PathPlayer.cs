@@ -6,10 +6,10 @@ namespace NotIdle.Core.Actions;
 /// Walks the pointer along a <see cref="CursorPath"/> on a background thread, so a
 /// run that lasts several seconds never stalls the controller's one-second poll.
 ///
-/// <para><b>The user always wins.</b> Before every frame the player checks that the
-/// pointer is still exactly where it last put it. If it isn't, someone has their
-/// hand on the mouse, and the run aborts mid-path rather than fighting them for
-/// control. That check is what makes a multi-second animated path safe to leave
+/// <para><b>The user always wins.</b> <see cref="PointerTravel"/> checks before every
+/// frame that the pointer is still where it last put it. If it isn't, someone has
+/// their hand on the mouse, and the run aborts mid-path rather than fighting them
+/// for control. That check is what makes a multi-second animated path safe to leave
 /// switched on.</para>
 ///
 /// <para>Only one run happens at a time — <see cref="TryStart"/> returns false while
@@ -18,16 +18,6 @@ namespace NotIdle.Core.Actions;
 /// </summary>
 public sealed class PathPlayer : IDisposable
 {
-    /// <summary>Frame period. ~66 fps: smooth to the eye, trivial against a 1 s poll.</summary>
-    private const int FrameIntervalMs = 15;
-
-    /// <summary>
-    /// How far the pointer may drift from where we left it before we conclude the
-    /// user moved it. Absolute <c>SendInput</c> coordinates are normalized to a
-    /// 0–65535 grid, so landing a pixel or two off is normal and not interference.
-    /// </summary>
-    private const int InterferenceTolerancePixels = 3;
-
     /// <summary>
     /// Hard ceiling on a single run, whatever the geometry and speed say. A
     /// hand-typed path of 256 far-flung points at 40 px/s would otherwise hold the
@@ -35,8 +25,7 @@ public sealed class PathPlayer : IDisposable
     /// </summary>
     private const int MaxRunDurationMs = 60_000;
 
-    private readonly ISyntheticInputSink _sink;
-    private readonly ISystemInputSource _input;
+    private readonly PointerTravel _travel;
     private readonly Lock _gate = new();
 
     private CancellationTokenSource? _cts;
@@ -47,8 +36,7 @@ public sealed class PathPlayer : IDisposable
 
     public PathPlayer(ISyntheticInputSink sink, ISystemInputSource input)
     {
-        _sink = sink;
-        _input = input;
+        _travel = new PointerTravel(sink, input);
     }
 
     /// <summary>True while a path is being traced.</summary>
@@ -92,8 +80,8 @@ public sealed class PathPlayer : IDisposable
         {
             if (_disposed || _running) return false;
 
-            cursor = SafeCursor();
-            waypoints = CursorPath.Build(settings, cursor, SafeScreen());
+            cursor = _travel.Current;
+            waypoints = CursorPath.Build(settings, cursor, _travel.Screen);
             if (waypoints.Count < 2) return false;
 
             _cts?.Dispose();
@@ -134,43 +122,32 @@ public sealed class PathPlayer : IDisposable
         bool aborted = false;
         try
         {
-            // Distance covered per frame, from the configured speed. At least one
-            // pixel, or a slow setting would emit frames that move nothing.
-            double stepPixels = Math.Max(1.0, pixelsPerSecond * FrameIntervalMs / 1000.0);
             long deadline = Environment.TickCount64 + MaxRunDurationMs;
+            bool Cancelled() => token.IsCancellationRequested;
 
+            // The first waypoint is where the path begins, so travel there from
+            // wherever the pointer actually is before tracing the shape.
             CursorPoint placed = startedAt;
 
-            for (int i = 1; i < waypoints.Count && !token.IsCancellationRequested; i++)
+            for (int i = 0; i < waypoints.Count; i++)
             {
-                CursorPoint from = waypoints[i - 1];
-                CursorPoint to = waypoints[i];
-                int frames = Math.Max(1, (int)Math.Ceiling(CursorPath.Distance(from, to) / stepPixels));
+                TravelResult leg = _travel.Segment(
+                    placed, waypoints[i], pixelsPerSecond, onStep, Cancelled, deadline);
 
-                for (int f = 1; f <= frames; f++)
+                if (!leg.Completed)
                 {
-                    if (token.IsCancellationRequested || Environment.TickCount64 > deadline) return;
-
-                    // The user's hand outranks us: if the pointer is not where we
-                    // left it, stop rather than drag it back.
-                    if (UserInterfered(placed)) { aborted = true; return; }
-
-                    double t = (double)f / frames;
-                    var next = new CursorPoint(
-                        (int)Math.Round(from.X + ((to.X - from.X) * t)),
-                        (int)Math.Round(from.Y + ((to.Y - from.Y) * t)));
-
-                    placed = _sink.MoveTo(next.X, next.Y);
-                    onStep(Environment.TickCount64, placed);
-
-                    Thread.Sleep(FrameIntervalMs);
+                    // Cancellation and the deadline are orderly stops; only a hand on
+                    // the mouse counts as the run being interrupted.
+                    aborted = leg.Interfered;
+                    return;
                 }
+
+                placed = leg.Position;
             }
 
-            if (restoreCursor && !token.IsCancellationRequested && !UserInterfered(placed))
+            if (restoreCursor && !token.IsCancellationRequested)
             {
-                CursorPoint back = _sink.MoveTo(startedAt.X, startedAt.Y);
-                onStep(Environment.TickCount64, back);
+                _ = _travel.Segment(placed, startedAt, pixelsPerSecond, onStep, Cancelled, deadline);
             }
         }
         catch
@@ -186,29 +163,6 @@ public sealed class PathPlayer : IDisposable
                 if (aborted) _abortedRuns++;
             }
         }
-    }
-
-    private bool UserInterfered(CursorPoint expected)
-    {
-        CursorPoint actual = SafeCursor();
-        return Math.Abs(actual.X - expected.X) > InterferenceTolerancePixels ||
-               Math.Abs(actual.Y - expected.Y) > InterferenceTolerancePixels;
-    }
-
-    private CursorPoint SafeCursor()
-    {
-        try { return _input.GetCursorPosition(); }
-        catch { return default; }
-    }
-
-    private ScreenBounds SafeScreen()
-    {
-        try
-        {
-            ScreenBounds bounds = _sink.GetVirtualScreen();
-            return bounds.Width > 0 && bounds.Height > 0 ? bounds : ScreenBounds.Fallback;
-        }
-        catch { return ScreenBounds.Fallback; }
     }
 
     public void Dispose()

@@ -49,12 +49,16 @@ public sealed class FakeDesktop : ISystemInputSource, ISyntheticInputSink, IExec
         return Cursor;
     }
 
+    /// <summary>Notified where the pointer was for each click, so tests can assert click points.</summary>
+    public Action<CursorPoint>? OnClick { get; set; }
+
     public void Click(MouseButton button, bool doubleClick)
     {
         ClickCount++;
         LastButton = button;
         LastClickWasDouble = doubleClick;
         RegisterInput();
+        OnClick?.Invoke(Cursor);
     }
 
     public void Acquire(bool keepDisplayOn) { PowerHeld = true; DisplayHeld = keepDisplayOn; }

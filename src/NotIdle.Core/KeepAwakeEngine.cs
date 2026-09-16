@@ -77,7 +77,7 @@ public sealed class KeepAwakeEngine : IDisposable
         _path = new PathPlayer(sink, input);
         _clicker = new AutoClicker(sink, input, () => _path.IsRunning);
 
-        _clicker.Clicked += OnSyntheticInput;
+        _clicker.SyntheticInput += OnSyntheticInput;
         _clicker.UserTookOver += OnClickerStoppedByUser;
     }
 
@@ -284,12 +284,15 @@ public sealed class KeepAwakeEngine : IDisposable
     /// <returns>False if a run is already in flight or the path is empty.</returns>
     public bool RunPathNow(Settings settings) => !_disposed && _path.TryStart(settings, OnSyntheticInput);
 
-    /// <summary>Emit one click right now, for the UI's "Test click" action.</summary>
+    /// <summary>
+    /// Emit one click right now, for the UI's "Test click" action. With click points
+    /// configured this travels to the next one first, on a background thread, and
+    /// reports itself through <see cref="SyntheticInputEmitted"/> when it lands.
+    /// </summary>
     public void ClickNow(long nowTick, Settings settings)
     {
         if (_disposed) return;
-        CursorPoint at = _clicker.ClickNow(settings);
-        OnSyntheticInput(nowTick, at);
+        _clicker.ClickNow(settings);
     }
 
     /// <summary>Zero every counter.</summary>
@@ -399,7 +402,7 @@ public sealed class KeepAwakeEngine : IDisposable
             }
         }
 
-        _clicker.Clicked -= OnSyntheticInput;
+        _clicker.SyntheticInput -= OnSyntheticInput;
         _clicker.UserTookOver -= OnClickerStoppedByUser;
         _clicker.Dispose();
         _path.Dispose();

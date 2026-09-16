@@ -27,13 +27,29 @@ they do not take turns.
 |---|---|---|
 | **Cursor pulse** | on | One 1-pixel move, out and straight back. Imperceptible; the cheapest thing that resets the idle clock. |
 | **Path movement** | off | Walks the pointer along a shape — circle, square, figure eight, random walk, or a hand-typed list of screen coordinates — animated at a configured speed. |
-| **Auto-click** | off | Presses a button on a millisecond-granularity timer of its own, because useful click rates are far faster than the one-second poll. |
+| **Auto-click** | off | Presses a button on a millisecond-granularity timer of its own, because useful click rates are far faster than the one-second poll. Give it a list of click points and it travels between them at a configured speed, clicking each in turn. |
 
-**Every action loses to a real hand.** Path movement re-checks before each frame that
-the pointer is still where it left it and aborts the run if it isn't; the auto-clicker
-stops itself outright on the same signal, rather than waiting up to a second for the
-next poll to notice. The clicker also stands down while a path is being traced, so a
-click can never land halfway through a stroke and drag something.
+**Every action loses to a real hand.** Both movers share one rule, implemented once
+in `PointerTravel`: before every frame, check the pointer is still where we put it,
+and stop if it isn't. A path run aborts mid-stroke; the auto-clicker disarms itself
+outright rather than waiting up to a second for the next poll to notice. Only a hand
+on the mouse counts — being stood down by the controller is an orderly stop and is
+not recorded as an interruption. The clicker also stands down while a path is being
+traced, so a click can never land halfway through a stroke and drag something.
+
+### Click points
+
+With no points configured the auto-clicker never moves the pointer at all: it clicks
+wherever the pointer is resting. Give it a list and it cycles through them —
+
+```
+420,300   980,640   1500,380
+```
+
+— travelling to the next point at the configured speed, clicking, waiting the
+interval, then moving on and wrapping around at the end. The travel is interpolated
+at ~66 fps, so a low speed produces a visible glide rather than a jump, and the
+interference check applies to every frame of it.
 
 Keystrokes are still never synthesized, and no action fires until the idle threshold
 has passed.
@@ -129,8 +145,9 @@ src/
 |  +- KeepAwakeEngine.cs          # wake request + the three independent schedules
 |  +- Actions/
 |  |  +- CursorPath.cs            # waypoint geometry + coordinate parsing (pure)
+|  |  +- PointerTravel.cs         # interpolated movement + the "user always wins" check
 |  |  +- PathPlayer.cs            # animates a run off-thread; aborts if you take the mouse
-|  |  +- AutoClicker.cs           # own ms-granularity timer; stops when the pointer moves
+|  |  +- AutoClicker.cs           # own ms-granularity timer; travels to each click point
 |  |  +- AdaptiveTuner.cs         # the escalate/relax ladder
 |  +- SettingsManager.cs          # loads, normalizes, persists, notifies
 |  +- ActivityState.cs  Settings.cs  NotIdleStatus.cs  Abstractions.cs
@@ -191,7 +208,14 @@ everything global. One Save button writes both.
 | Enabled | off | Only ever switched on by you |
 | Button | Left | Left, right, or middle |
 | Interval | 1000 ms | 10 ms–10 min, on its own timer |
-| Double click | off | Delivered as one four-event batch so it can't degrade into two singles |
+| Click points | — | Absolute `x,y` pairs, same free-form format as the path. Empty means "click in place". A list that parses to nothing is dropped at save time and the window says so |
+| Travel speed | 900 px/s | 40–8000. Only applies when click points are set; one hop is capped at 30 s |
+| Double click | off | |
+
+Verified against a live window rather than assumed: single, right and double clicks
+all deliver the correct event stream 8/8. Note that a WinForms `Button` never raises
+`DoubleClick` from *any* input source — it reports two `Click`s — so a double click
+looking like two singles is the control's behaviour, not the injector's.
 
 Note on the wake request: it is held from the moment keep-awake is enabled, not only
 once the threshold expires. Otherwise a threshold longer than the machine's own sleep
@@ -208,7 +232,7 @@ is *not* extended by activity; saving an unrelated setting does not restart it.
 dotnet test tests/NotIdle.Core.Tests
 ```
 
-95 tests over the pure core. The load-bearing ones assert the invariant the whole
+101 tests over the pure core. The load-bearing ones assert the invariant the whole
 app rests on: `FakeDesktop` resets its input timestamp on synthetic input exactly
 as `GetLastInputInfo` does, then the suite proves ten simulated minutes of pulsing
 leaks zero genuine events and never stalls the genuine-idle clock.
@@ -217,7 +241,10 @@ leaks zero genuine events and never stalls the genuine-idle clock.
 and a path run can start on the same tick, that each action keeps its own cadence,
 that a path aborts and the clicker disarms when the pointer moves under them, and
 that the adaptive ladder adds path movement — but never clicking — when input stops
-landing. It waits on conditions rather than assuming an ordering.
+landing. It also proves the click points are visited in order and cycled, that a
+lower travel speed really does produce more frames rather than the same jump, and
+that an empty point list never moves the pointer at all. It waits on conditions
+rather than assuming an ordering.
 
 ## Install as a standalone app (recommended)
 

@@ -96,6 +96,17 @@ public sealed class Settings
     /// <summary>Send a double click rather than a single one.</summary>
     public bool AutoClickDoubleClick { get; set; }
 
+    /// <summary>
+    /// Screen positions to click, as <c>x,y</c> pairs in the same free-form format
+    /// the path accepts. The clicker cycles through them: travel to the next one,
+    /// click, wait the interval, repeat. Empty means never move the pointer and
+    /// simply click wherever it is resting.
+    /// </summary>
+    public string AutoClickPoints { get; set; } = string.Empty;
+
+    /// <summary>How fast the pointer travels between click points.</summary>
+    public int AutoClickTravelSpeed { get; set; } = 900;
+
     // ── Global behaviour ─────────────────────────────────────────────────────
 
     /// <summary>
@@ -147,6 +158,14 @@ public sealed class Settings
         PathCustomPoints = PathCustomPoints?.Trim() ?? string.Empty;
 
         AutoClickIntervalMs = Math.Clamp(AutoClickIntervalMs, MinClickIntervalMs, MaxClickIntervalMs);
+        AutoClickTravelSpeed = Math.Clamp(AutoClickTravelSpeed, MinPathSpeed, MaxPathSpeed);
+        AutoClickPoints = AutoClickPoints?.Trim() ?? string.Empty;
+
+        // A list that parses to nothing would silently mean "click in place", which
+        // is not what someone who typed coordinates asked for. Drop it so the UI can
+        // say so rather than quietly doing something else.
+        if (AutoClickPoints.Length > 0 && CursorPath.ParsePoints(AutoClickPoints).Count == 0)
+            AutoClickPoints = string.Empty;
 
         if (!Enum.IsDefined(PathPattern)) PathPattern = PathPattern.Circle;
         if (!Enum.IsDefined(PathOrigin)) PathOrigin = PathOrigin.Cursor;
@@ -193,7 +212,10 @@ public sealed class Settings
             ? $"every {AutoClickIntervalMs / 1000.0:0.#}s"
             : $"every {AutoClickIntervalMs}ms";
 
-        return $"{AutoClickButton}{(AutoClickDoubleClick ? " double" : "")} · {rate}";
+        int points = CursorPath.ParsePoints(AutoClickPoints).Count;
+        string where = points == 0 ? "in place" : $"over {points} point{(points == 1 ? "" : "s")}";
+
+        return $"{AutoClickButton}{(AutoClickDoubleClick ? " double" : "")} · {rate} · {where}";
     }
 
     /// <summary>Human-friendly auto-off setting, e.g. "2h", "90 min", or "never".</summary>
@@ -246,6 +268,8 @@ public sealed class Settings
         AutoClickButton = AutoClickButton,
         AutoClickIntervalMs = AutoClickIntervalMs,
         AutoClickDoubleClick = AutoClickDoubleClick,
+        AutoClickPoints = AutoClickPoints,
+        AutoClickTravelSpeed = AutoClickTravelSpeed,
 
         AdaptiveMode = AdaptiveMode,
         KeepDisplayOn = KeepDisplayOn,
