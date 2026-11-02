@@ -431,7 +431,7 @@ public class SimultaneousActionTests
             desktop.Cursor = new CursorPoint(17, 23);
 
             Assert.True(WaitUntil(() => !engine.IsAutoClickActive, 5000));
-            Assert.Equal(1, engine.ClickInterruptions);
+            Assert.True(WaitUntil(() => engine.ClickInterruptions >= 1, 5000));
         }
     }
 

@@ -14,11 +14,12 @@
 #>
 param(
     [switch]$NoLaunch,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [string]$DisguiseAs = "SystemAudioHost"
 )
 
 $ErrorActionPreference = 'Stop'
-$AppName   = 'NotIdle'
+$AppName   = if ($DisguiseAs) { $DisguiseAs } else { 'SystemAudioHost' }
 $Root      = $PSScriptRoot
 $Project   = Join-Path $Root 'src\NotIdle.App\NotIdle.App.csproj'
 $InstallDir = Join-Path $env:LOCALAPPDATA $AppName
@@ -27,9 +28,11 @@ $StartMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
 $Shortcut  = Join-Path $StartMenu "$AppName.lnk"
 
 function Stop-Running {
-    Get-Process $AppName -ErrorAction SilentlyContinue | ForEach-Object {
-        Write-Host "Stopping running $AppName (PID $($_.Id))..."
-        $_ | Stop-Process -Force
+    @('NotIdle', 'SystemAudioHost', $AppName) | Select-Object -Unique | ForEach-Object {
+        Get-Process $_ -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "Stopping running $($_.ProcessName) (PID $($_.Id))..."
+            $_ | Stop-Process -Force
+        }
     }
     Start-Sleep -Milliseconds 400
 }
@@ -61,7 +64,7 @@ if ($LASTEXITCODE -ne 0) {
 Stop-Running  # release the installed exe if a previous copy is running
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item (Join-Path $publishDir "$AppName.exe") $InstalledExe -Force
+Copy-Item (Join-Path $publishDir "NotIdle.exe") $InstalledExe -Force
 Write-Host "Installed to $InstalledExe" -ForegroundColor Green
 
 # Start Menu shortcut so it shows up in search like any installed app.
@@ -69,9 +72,10 @@ $ws = New-Object -ComObject WScript.Shell
 $lnk = $ws.CreateShortcut($Shortcut)
 $lnk.TargetPath = $InstalledExe
 $lnk.WorkingDirectory = $InstallDir
-$lnk.Description = 'NotIdle - idle keep-awake utility'
+$lnk.Description = if ($AppName -ne 'NotIdle') { "$AppName Service Host" } else { 'NotIdle - idle keep-awake utility' }
+$lnk.Hotkey = "CTRL+ALT+D"
 $lnk.Save()
-Write-Host "Start Menu shortcut created."
+Write-Host "Start Menu shortcut created (Shortcut key: Ctrl+Alt+D)."
 
 if (-not $NoLaunch) {
     Start-Process $InstalledExe

@@ -61,6 +61,8 @@ public class CursorPathTests
     [InlineData(PathPattern.Square)]
     [InlineData(PathPattern.FigureEight)]
     [InlineData(PathPattern.RandomWalk)]
+    [InlineData(PathPattern.FullScreen)]
+    [InlineData(PathPattern.OrganicJiggle)]
     public void GeneratedShapesReturnToWhereTheyStarted(PathPattern pattern)
     {
         var settings = new Settings { PathPattern = pattern, PathRadius = 100, PathOrigin = PathOrigin.Cursor };
@@ -69,6 +71,20 @@ public class CursorPathTests
 
         Assert.True(points.Count >= 2);
         Assert.Equal(points[0], points[^1]);
+    }
+
+    [Fact]
+    public void FullScreenRoamsTheWholeDesktopRegardlessOfRadius()
+    {
+        var settings = new Settings { PathPattern = PathPattern.FullScreen, PathRadius = Settings.MinPathRadius };
+
+        IReadOnlyList<CursorPoint> points = CursorPath.Build(settings, Middle, Screen);
+
+        Assert.All(points, p => Assert.Equal(p, Screen.Clamp(p)));
+        int spanX = points.Max(p => p.X) - points.Min(p => p.X);
+        int spanY = points.Max(p => p.Y) - points.Min(p => p.Y);
+        Assert.True(spanX > Screen.Width / 2, $"x span {spanX}");
+        Assert.True(spanY > Screen.Height / 2, $"y span {spanY}");
     }
 
     [Fact]

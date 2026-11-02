@@ -8,7 +8,7 @@ namespace NotIdle.Core.Tests;
 /// <c>GetLastInputInfo</c> — that shared counter is the whole reason attribution
 /// is hard, so the fake must reproduce it or the tests prove nothing.
 /// </summary>
-public sealed class FakeDesktop : ISystemInputSource, ISyntheticInputSink, IExecutionStateController
+public sealed class FakeDesktop : ISystemInputSource, ISyntheticInputSink, IExecutionStateController, ISystemPowerSource
 {
     public long Now { get; set; } = 1_000_000;
     public long LastInputTick { get; set; } = 1_000_000;
@@ -18,10 +18,14 @@ public sealed class FakeDesktop : ISystemInputSource, ISyntheticInputSink, IExec
     public int PulseCount { get; private set; }
     public int MoveCount { get; private set; }
     public int ClickCount { get; private set; }
+    public int ScrollCount { get; private set; }
+    public int LastScrollNotches { get; private set; }
     public MouseButton LastButton { get; private set; }
     public bool LastClickWasDouble { get; private set; }
     public bool PowerHeld { get; private set; }
     public bool DisplayHeld { get; private set; }
+    public bool IsOnBattery { get; set; }
+    public int BatteryPercentage { get; set; } = 100;
 
     /// <summary>
     /// When true, injected input moves the pointer but not the idle timestamp —
@@ -59,6 +63,13 @@ public sealed class FakeDesktop : ISystemInputSource, ISyntheticInputSink, IExec
         LastClickWasDouble = doubleClick;
         RegisterInput();
         OnClick?.Invoke(Cursor);
+    }
+
+    public void Scroll(int notches)
+    {
+        ScrollCount++;
+        LastScrollNotches = notches;
+        RegisterInput();
     }
 
     public void Acquire(bool keepDisplayOn) { PowerHeld = true; DisplayHeld = keepDisplayOn; }

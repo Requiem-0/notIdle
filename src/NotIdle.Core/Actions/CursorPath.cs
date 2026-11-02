@@ -15,6 +15,15 @@ public enum PathPattern
     /// <summary>A handful of unpredictable hops inside the radius. Different every run.</summary>
     RandomWalk,
 
+    /// <summary>
+    /// Wild hops to random points anywhere on the virtual desktop, ignoring radius
+    /// and origin. Different every run.
+    /// </summary>
+    FullScreen,
+
+    /// <summary>Subtle, natural human-like micro-wander around the cursor with organic drift and return.</summary>
+    OrganicJiggle,
+
     /// <summary>The absolute screen coordinates listed in <see cref="Settings.PathCustomPoints"/>.</summary>
     Custom,
 }
@@ -31,7 +40,8 @@ public enum PathOrigin
 
 /// <summary>
 /// Turns a path configuration into a list of waypoints. Pure and deterministic
-/// apart from <see cref="PathPattern.RandomWalk"/>, so the geometry is unit
+/// apart from <see cref="PathPattern.RandomWalk"/> and
+/// <see cref="PathPattern.FullScreen"/>, so the geometry is unit
 /// testable without a desktop.
 ///
 /// <para>Waypoints are corners, not frames: <see cref="PathPlayer"/> interpolates
@@ -48,6 +58,12 @@ public static class CursorPath
 
     /// <summary>Hops in a random walk. Enough to look aimless, few enough to finish quickly.</summary>
     private const int RandomWalkSteps = 8;
+
+    /// <summary>Hops in a full-screen run. Plenty of chaos without running forever.</summary>
+    private const int FullScreenSteps = 20;
+
+    /// <summary>Subtle drift steps in an organic jiggle.</summary>
+    private const int OrganicJiggleSteps = 12;
 
     /// <summary>A path longer than this is refused, so a pasted coordinate dump can't run for hours.</summary>
     public const int MaxWaypoints = 256;
@@ -79,6 +95,8 @@ public static class CursorPath
             PathPattern.Square => Square(origin, radius),
             PathPattern.FigureEight => FigureEight(origin, radius),
             PathPattern.RandomWalk => RandomWalk(origin, radius),
+            PathPattern.FullScreen => FullScreen(cursor, screen),
+            PathPattern.OrganicJiggle => OrganicJiggle(origin, radius),
             _ => [],
         };
 
@@ -183,6 +201,52 @@ public static class CursorPath
                 o.X + (int)Math.Round(distance * Math.Cos(angle)),
                 o.Y + (int)Math.Round(distance * Math.Sin(angle)));
         }
+        points[^1] = o;
+        return points;
+    }
+
+    // Starts and ends at the pointer, like every other pattern, but the hops in
+    // between land anywhere on any monitor.
+    private static CursorPoint[] FullScreen(CursorPoint start, ScreenBounds screen)
+    {
+        var points = new CursorPoint[FullScreenSteps + 2];
+        points[0] = start;
+        for (int i = 1; i <= FullScreenSteps; i++)
+        {
+            points[i] = new CursorPoint(
+                Random.Shared.Next(screen.Left, Math.Max(screen.Left + 1, screen.Right)),
+                Random.Shared.Next(screen.Top, Math.Max(screen.Top + 1, screen.Bottom)));
+        }
+        points[^1] = start;
+        return points;
+    }
+
+    private static CursorPoint[] OrganicJiggle(CursorPoint o, int r)
+    {
+        int maxDrift = Math.Clamp(r / 4, 6, 24);
+        var points = new CursorPoint[OrganicJiggleSteps + 2];
+        points[0] = o;
+
+        double currentX = o.X;
+        double currentY = o.Y;
+
+        for (int i = 1; i <= OrganicJiggleSteps; i++)
+        {
+            double angle = Random.Shared.NextDouble() * 2 * Math.PI;
+            double step = 2.0 + (Random.Shared.NextDouble() * (maxDrift / 3.0));
+            currentX += step * Math.Cos(angle);
+            currentY += step * Math.Sin(angle);
+
+            double distFromOrigin = Math.Sqrt(Math.Pow(currentX - o.X, 2) + Math.Pow(currentY - o.Y, 2));
+            if (distFromOrigin > maxDrift)
+            {
+                currentX = o.X + ((currentX - o.X) / distFromOrigin * maxDrift);
+                currentY = o.Y + ((currentY - o.Y) / distFromOrigin * maxDrift);
+            }
+
+            points[i] = new CursorPoint((int)Math.Round(currentX), (int)Math.Round(currentY));
+        }
+
         points[^1] = o;
         return points;
     }

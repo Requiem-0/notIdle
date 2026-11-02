@@ -95,11 +95,26 @@ public class SettingsTests
             AutoClickIntervalMs = 250,
             AutoClickDoubleClick = true,
 
+            ScrollEnabled = true,
+            ScrollMode = ScrollMode.Down,
+            ScrollAmount = 5,
+            ScrollMinIntervalSeconds = 25,
+            ScrollMaxIntervalSeconds = 120,
+
+            BurstModeEnabled = true,
+            TargetActivityPercent = 85,
+
             AdaptiveMode = false,
             KeepDisplayOn = false,
             PauseWhenFullScreen = false,
+            PauseOnBattery = true,
+            PauseOnLowBattery = false,
+            LowBatteryThresholdPercent = 15,
+            GlobalHotkeyEnabled = false,
             StartWithWindows = true,
             AutoOffMinutes = 120,
+            StealthMode = false,
+            GhostMode = true,
         };
         s.Normalize();
         return s;

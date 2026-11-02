@@ -30,6 +30,22 @@ public enum MouseButton
     Middle,
 }
 
+/// <summary>How synthetic mouse scrolling behaves.</summary>
+public enum ScrollMode
+{
+    /// <summary>Scroll down and immediately back up. Resets idle time without displacing content.</summary>
+    Rebound,
+
+    /// <summary>Scroll downward only.</summary>
+    Down,
+
+    /// <summary>Scroll upward only.</summary>
+    Up,
+
+    /// <summary>Alternate between downward and upward scrolling on successive runs.</summary>
+    Alternating,
+}
+
 /// <summary>
 /// System-wide input telemetry. Abstracted so the monitoring layer is testable
 /// without a real desktop session.
@@ -54,10 +70,11 @@ public interface ISystemInputSource
 /// <summary>
 /// Emits the synthetic input NotIdle is allowed to produce.
 ///
-/// <para>Three primitives, each opted into separately by the user:
+/// <para>Four primitives, each opted into separately by the user:
 /// the imperceptible keep-awake <see cref="Pulse"/> (always available),
-/// <see cref="MoveTo"/> for tracing a configured path, and <see cref="Click"/>
-/// for the auto-clicker. Keystrokes are still never synthesized.</para>
+/// <see cref="MoveTo"/> for tracing a configured path, <see cref="Click"/>
+/// for the auto-clicker, and <see cref="Scroll"/> for mouse wheel activity.
+/// Keystrokes are still never synthesized.</para>
 /// </summary>
 public interface ISyntheticInputSink
 {
@@ -81,6 +98,11 @@ public interface ISyntheticInputSink
     /// <summary>Press and release a mouse button at the current pointer position.</summary>
     void Click(MouseButton button, bool doubleClick);
 
+    /// <summary>
+    /// Rotate the mouse wheel by the specified number of notches (positive = up, negative = down).
+    /// </summary>
+    void Scroll(int notches);
+
     /// <summary>Bounds of the whole virtual desktop, for clamping path waypoints.</summary>
     ScreenBounds GetVirtualScreen();
 }
@@ -97,6 +119,16 @@ public interface IExecutionStateController
 
     /// <summary>Drop the request and let normal power policy resume.</summary>
     void Release();
+}
+
+/// <summary>Describes system battery/power status.</summary>
+public interface ISystemPowerSource
+{
+    /// <summary>True when running on battery (unplugged from AC power).</summary>
+    bool IsOnBattery { get; }
+
+    /// <summary>Battery percentage remaining (0-100), or -1 if unknown / AC desktop.</summary>
+    int BatteryPercentage { get; }
 }
 
 /// <summary>Describes the window the user is currently focused on.</summary>
@@ -131,3 +163,7 @@ public interface ISettingsStore
     Settings Load();
     void Save(Settings settings);
 }
+
+/// <summary>Represents a snapshot interval of activity for timeline visualization.</summary>
+public readonly record struct ActivityBucket(DateTimeOffset Time, ActivityState State);
+

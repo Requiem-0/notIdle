@@ -1,5 +1,6 @@
 using System.Threading;
 using NotIdle.Core.Monitoring;
+using NotIdle.Core.Native;
 
 namespace NotIdle.Core;
 
@@ -39,8 +40,12 @@ public sealed class NotIdleController : IDisposable
     private readonly WindowMonitor _windows;
     private readonly IdleStateManager _stateMachine;
     private readonly KeepAwakeEngine _keepAwake;
+    private readonly ISystemPowerSource _power;
     private readonly Timer _timer;
     private readonly Lock _gate = new();
+
+    private readonly List<ActivityBucket> _history = new(288);
+    private DateTimeOffset _lastHistoryBucketTime = DateTimeOffset.MinValue;
 
     private Settings _settings;
     private bool _running;
@@ -63,19 +68,21 @@ public sealed class NotIdleController : IDisposable
         UserActivityMonitor activity,
         WindowMonitor windows,
         IdleStateManager stateMachine,
-        KeepAwakeEngine keepAwake)
+        KeepAwakeEngine keepAwake,
+        ISystemPowerSource? power = null)
     {
         _settingsManager = settingsManager;
         _activity = activity;
         _windows = windows;
         _stateMachine = stateMachine;
         _keepAwake = keepAwake;
+        _power = power ?? new Win32PowerSource();
         _settings = settingsManager.Current;
 
         _stateMachine.StateChanged += (_, next) => StateChanged?.Invoke(next);
         _settingsManager.Changed += OnSettingsChanged;
 
-        // Every synthetic event — pulse, path frame, click — has to be credited to
+        // Every synthetic event — pulse, path frame, click, scroll — has to be credited to
         // NotIdle, or the app's own input would read as the user returning and
         // switch keep-awake straight back off.
         _keepAwake.SyntheticInputEmitted += _activity.NoteSyntheticInput;
@@ -177,6 +184,9 @@ public sealed class NotIdleController : IDisposable
     /// <summary>Emit one click right now, for the UI's Test action.</summary>
     public void TriggerTestClick() => _keepAwake.ClickNow(Environment.TickCount64, CurrentSettings());
 
+    /// <summary>Emit one scroll action right now, for the UI's Test action.</summary>
+    public void TriggerTestScroll() => _keepAwake.ScrollNow(Environment.TickCount64, CurrentSettings());
+
     /// <summary>Zero the session counters shown on the dashboard.</summary>
     public void ResetStatistics()
     {
@@ -230,8 +240,42 @@ public sealed class NotIdleController : IDisposable
             AutoClickActive: _keepAwake.IsAutoClickActive,
             ClickInterruptions: _keepAwake.ClickInterruptions,
             AutoClickDescription: settings.DescribeAutoClick(),
+            ScrollCount: _keepAwake.ScrollCount,
+            TimeUntilNextScroll: _keepAwake.TimeUntilNextScroll(now),
+            ScrollDescription: settings.DescribeScroll(),
+            BurstModeEnabled: settings.BurstModeEnabled,
+            TargetActivityPercent: settings.TargetActivityPercent,
+            BurstRunning: _keepAwake.IsBurstRunning,
+            BurstCount: _keepAwake.BurstCount,
+            BurstDescription: settings.DescribeBurst(),
+            IsOnBattery: _power.IsOnBattery,
+            BatteryPercent: _power.BatteryPercentage,
             AdaptiveMode: settings.AdaptiveMode,
-            AdaptiveNote: settings.AdaptiveMode ? _keepAwake.Tuner.Describe() : string.Empty);
+            AdaptiveNote: settings.AdaptiveMode ? _keepAwake.Tuner.Describe() : string.Empty,
+            RecentHistory: GetHistorySnapshot());
+    }
+
+    private IReadOnlyList<ActivityBucket> GetHistorySnapshot()
+    {
+        lock (_gate) return _history.ToArray();
+    }
+
+    private void RecordHistory(ActivityState state)
+    {
+        DateTimeOffset now = DateTimeOffset.Now;
+        lock (_gate)
+        {
+            if (_history.Count == 0 || (now - _lastHistoryBucketTime) >= TimeSpan.FromMinutes(5))
+            {
+                _lastHistoryBucketTime = now;
+                _history.Add(new ActivityBucket(now, state));
+                if (_history.Count > 288) _history.RemoveAt(0);
+            }
+            else
+            {
+                _history[^1] = new ActivityBucket(_lastHistoryBucketTime, state);
+            }
+        }
     }
 
     private Settings CurrentSettings()
@@ -322,7 +366,10 @@ public sealed class NotIdleController : IDisposable
         // secure desktop just burns syscalls.
         ForegroundWindow window = locked ? ForegroundWindow.Unknown : _windows.Poll();
         ActivitySample sample = _activity.Sample(window.Handle, now);
-        bool standDown = settings.PauseWhenFullScreen && window.WantsUninterrupted;
+
+        bool batteryStandDown = (_power.IsOnBattery && settings.PauseOnBattery)
+            || (_power.IsOnBattery && settings.PauseOnLowBattery && _power.BatteryPercentage >= 0 && _power.BatteryPercentage <= settings.LowBatteryThresholdPercent);
+        bool standDown = (settings.PauseWhenFullScreen && window.WantsUninterrupted) || batteryStandDown;
 
         // Now that the sample has refreshed the OS idle reading, settle any
         // outstanding "did our last action actually register?" question.
@@ -337,6 +384,7 @@ public sealed class NotIdleController : IDisposable
             IdleThreshold: settings.IdleThreshold);
 
         ActivityState state = _stateMachine.Evaluate(inputs, now);
+        RecordHistory(state);
 
         // ── Act ──────────────────────────────────────────────────────────────
         if (state == ActivityState.Disabled)

@@ -24,16 +24,19 @@ internal sealed class DashboardForm : Form
     private const int CardWidth = 478;
 
     private static readonly PathPattern[] Patterns =
-        [PathPattern.Circle, PathPattern.Square, PathPattern.FigureEight, PathPattern.RandomWalk, PathPattern.Custom];
+        [PathPattern.Circle, PathPattern.Square, PathPattern.FigureEight, PathPattern.RandomWalk, PathPattern.FullScreen, PathPattern.OrganicJiggle, PathPattern.Custom];
 
     private static readonly string[] PatternNames =
-        ["Circle", "Square", "Figure eight", "Random walk", "Custom points"];
+        ["Circle", "Square", "Figure eight", "Random walk", "Full screen (crazy)", "Organic human jiggle", "Custom points"];
 
     private static readonly PathOrigin[] Origins = [PathOrigin.Cursor, PathOrigin.ScreenCenter];
     private static readonly string[] OriginNames = ["Around the cursor", "Around screen centre"];
 
     private static readonly MouseButton[] Buttons = [MouseButton.Left, MouseButton.Right, MouseButton.Middle];
     private static readonly string[] ButtonNames = ["Left", "Right", "Middle"];
+
+    private static readonly ScrollMode[] ScrollModes = [ScrollMode.Rebound, ScrollMode.Down, ScrollMode.Up, ScrollMode.Alternating];
+    private static readonly string[] ScrollModeNames = ["Rebound (nudge down & back)", "Down (reading)", "Up", "Alternating"];
 
     private readonly NotIdleController _controller;
     private readonly SettingsManager _settingsManager;
@@ -44,6 +47,8 @@ internal sealed class DashboardForm : Form
     private readonly StatePill _statePill = new();
     private readonly Label _stateDetail = new();
     private readonly Label _adaptiveNote = new();
+    private readonly ActivityTimelineBar _timelineBar = new();
+    private readonly Label _timelineCaption = new();
     private readonly Button _toggleButton = new();
     private readonly Label _sinceInteraction = NewValue();
     private readonly Label _totalKeepAwake = NewValue();
@@ -53,6 +58,8 @@ internal sealed class DashboardForm : Form
     private readonly Label _activeActions = NewValue();
     private readonly Label _pathStatus = NewValue();
     private readonly Label _clickStatus = NewValue();
+    private readonly Label _scrollStatus = NewValue();
+    private readonly Label _powerStatus = NewValue();
     private readonly Label _foregroundApp = NewValue();
     private readonly Label _wakeLock = NewValue();
     private readonly Label _autoOff = NewValue();
@@ -84,6 +91,20 @@ internal sealed class DashboardForm : Form
     private readonly Label _autoClickPointsCaption = new();
     private readonly NumericUpDown _autoClickTravelSpeed = new();
 
+    // Actions — auto-scroll
+    private readonly CheckBox _scrollEnabled = new();
+    private readonly ComboBox _scrollMode = new();
+    private readonly NumericUpDown _scrollAmount = new();
+    private readonly NumericUpDown _scrollMinInterval = new();
+    private readonly NumericUpDown _scrollMaxInterval = new();
+
+    // Actions — target activity & burst mode
+    private readonly CheckBox _burstEnabled = new();
+    private readonly TrackBar _burstTargetSlider = new();
+    private readonly Label _burstTargetLabel = new();
+    private readonly Label _burstCadenceLabel = new();
+    private readonly Label _burstStatus = new();
+
     // Settings
     private readonly CheckBox _adaptiveMode = new();
     private readonly NumericUpDown _threshold = new();
@@ -91,7 +112,12 @@ internal sealed class DashboardForm : Form
     private readonly NumericUpDown _autoOffMinutes = new();
     private readonly CheckBox _keepDisplayOn = new();
     private readonly CheckBox _pauseFullScreen = new();
+    private readonly CheckBox _pauseOnBattery = new();
+    private readonly CheckBox _pauseOnLowBattery = new();
+    private readonly CheckBox _globalHotkey = new();
     private readonly CheckBox _startWithWindows = new();
+    private readonly CheckBox _stealthMode = new();
+    private readonly CheckBox _ghostMode = new();
     private readonly Label _confirmLabel = new();
 
     public DashboardForm(NotIdleController controller, SettingsManager settingsManager)
@@ -99,7 +125,7 @@ internal sealed class DashboardForm : Form
         _controller = controller;
         _settingsManager = settingsManager;
 
-        Text = "NotIdle";
+        Text = _settingsManager.Current.StealthMode ? "System Audio Device Settings" : "NotIdle";
         Icon = TrayIconFactory.LoadAppIcon();
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterScreen;
@@ -107,9 +133,7 @@ internal sealed class DashboardForm : Form
         MinimizeBox = false;
         ShowInTaskbar = true;
         AutoScaleMode = AutoScaleMode.Dpi;
-        // Tall enough for the dashboard's eleven stat rows *and* the test buttons
-        // beneath them; the Actions pane scrolls, so it sets no floor of its own.
-        ClientSize = new Size(544, 724);
+        ClientSize = new Size(544, 760);
         BackColor = Theme.Canvas;
         Font = Theme.Body;
 
@@ -191,8 +215,11 @@ internal sealed class DashboardForm : Form
         saveBtn.FlatAppearance.BorderSize = 0;
         saveBtn.Click += (_, _) => SaveSettings();
 
+        var exitBtn = SecondaryButton("Exit App", () => Application.Exit());
+        exitBtn.Margin = new Padding(0, 8, 10, 10);
+
         _confirmLabel.AutoSize = true;
-        _confirmLabel.MaximumSize = new Size(370, 0);
+        _confirmLabel.MaximumSize = new Size(270, 0);
         _confirmLabel.ForeColor = Theme.ColorFor(ActivityState.Active);
         _confirmLabel.Margin = new Padding(0, 12, 0, 0);
 
@@ -207,6 +234,7 @@ internal sealed class DashboardForm : Form
             WrapContents = false,
         };
         bar.Controls.Add(saveBtn);
+        bar.Controls.Add(exitBtn);
         bar.Controls.Add(_confirmLabel);
         return bar;
     }
@@ -257,6 +285,14 @@ internal sealed class DashboardForm : Form
         _toggleButton.Margin = new Padding(0);
         _toggleButton.Click += (_, _) => ToggleKeepAwake();
 
+        _timelineCaption.Text = "24-Hour Activity Timeline (Honest Record)";
+        _timelineCaption.ForeColor = Theme.Muted;
+        _timelineCaption.Font = Theme.Body;
+        _timelineCaption.AutoSize = true;
+        _timelineCaption.Margin = new Padding(2, 8, 0, 3);
+
+        _timelineBar.Margin = new Padding(2, 0, 0, 4);
+
         var stack = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -272,6 +308,8 @@ internal sealed class DashboardForm : Form
         stack.Controls.Add(_stateDetail);
         stack.Controls.Add(_adaptiveNote);
         stack.Controls.Add(_toggleButton);
+        stack.Controls.Add(_timelineCaption);
+        stack.Controls.Add(_timelineBar);
         return Card(stack);
     }
 
@@ -289,6 +327,9 @@ internal sealed class DashboardForm : Form
         AddRow(table, "Next pulse in", _nextAction);
         AddRow(table, "Path movement", _pathStatus);
         AddRow(table, "Auto-click", _clickStatus);
+        AddRow(table, "Auto-scroll", _scrollStatus);
+        AddRow(table, "Activity burst target", _burstStatus);
+        AddRow(table, "Power status", _powerStatus);
         AddRow(table, "Focused app", _foregroundApp);
         AddRow(table, "System wake request", _wakeLock);
         AddRow(table, "Auto-off in", _autoOff);
@@ -328,6 +369,12 @@ internal sealed class DashboardForm : Form
             RenderStatus();
         }));
 
+        flow.Controls.Add(SecondaryButton("Test scroll", () =>
+        {
+            _controller.TriggerTestScroll();
+            RenderStatus();
+        }));
+
         flow.Controls.Add(SecondaryButton("Reset stats", () =>
         {
             _controller.ResetStatistics();
@@ -349,14 +396,15 @@ internal sealed class DashboardForm : Form
             Margin = Padding.Empty,
         };
 
+        flow.Controls.Add(BuildBurstCard());
         flow.Controls.Add(BuildPulseCard());
         flow.Controls.Add(BuildPathCard());
         flow.Controls.Add(BuildClickCard());
+        flow.Controls.Add(BuildScrollCard());
         flow.Controls.Add(new Label
         {
-            Text = "The three actions run on independent schedules, so any combination " +
-                   "of them can be in flight at the same time. All of them stand down " +
-                   "the moment you touch the mouse or keyboard.",
+            Text = "The actions run on coordinated and independent schedules. All of them " +
+                   "stand down the moment you touch the mouse or keyboard.",
             AutoSize = true,
             MaximumSize = new Size(CardWidth, 0),
             ForeColor = Theme.Muted,
@@ -489,6 +537,111 @@ internal sealed class DashboardForm : Form
         return SizedCard(table);
     }
 
+    private Control BuildScrollCard()
+    {
+        Configure(_scrollEnabled, "Auto-scroll — rotate the mouse wheel on an interval");
+        _scrollEnabled.Font = Theme.BodyStrong;
+        _scrollEnabled.CheckedChanged += (_, _) => SyncEnabledState();
+
+        ConfigureCombo(_scrollMode, ScrollModeNames, 190);
+        ConfigureSpinner(_scrollAmount, Settings.MinScrollAmount, Settings.MaxScrollAmount, 70);
+        ConfigureSpinner(_scrollMinInterval, Settings.MinScrollInterval, Settings.MaxScrollInterval, 70);
+        ConfigureSpinner(_scrollMaxInterval, Settings.MinScrollInterval, Settings.MaxScrollInterval, 70);
+
+        _scrollMinInterval.ValueChanged += (_, _) =>
+        {
+            if (_scrollMaxInterval.Value < _scrollMinInterval.Value) _scrollMaxInterval.Value = _scrollMinInterval.Value;
+        };
+        _scrollMaxInterval.ValueChanged += (_, _) =>
+        {
+            if (_scrollMinInterval.Value > _scrollMaxInterval.Value) _scrollMinInterval.Value = _scrollMaxInterval.Value;
+        };
+
+        TableLayoutPanel table = TwoColumnTable();
+        AddFullWidth(table, _scrollEnabled);
+        AddRow(table, "Mode", _scrollMode);
+        AddRow(table, "Notches per scroll", _scrollAmount);
+        AddRow(table, "Minimum interval (s)", _scrollMinInterval);
+        AddRow(table, "Maximum interval (s)", _scrollMaxInterval);
+        AddFullWidth(table, Hint("Rebound scrolls down and returns immediately back up so your page stays in place. " +
+                                 "Useful for keeping feed readers, document editors, and web pages active."));
+        return SizedCard(table);
+    }
+
+    private Control BuildBurstCard()
+    {
+        Configure(_burstEnabled, "Activity target & burst mode — Tracker-proof human rhythm");
+        _burstEnabled.Font = Theme.BodyStrong;
+        _burstEnabled.CheckedChanged += (_, _) =>
+        {
+            SyncEnabledState();
+            UpdateBurstCadenceText();
+        };
+
+        _burstTargetSlider.Minimum = Settings.MinTargetActivityPercent;
+        _burstTargetSlider.Maximum = Settings.MaxTargetActivityPercent;
+        _burstTargetSlider.TickFrequency = 5;
+        _burstTargetSlider.SmallChange = 5;
+        _burstTargetSlider.LargeChange = 10;
+        _burstTargetSlider.Width = 190;
+        _burstTargetSlider.Height = 32;
+        _burstTargetSlider.ValueChanged += (_, _) => UpdateBurstCadenceText();
+
+        _burstTargetLabel.AutoSize = true;
+        _burstTargetLabel.Font = Theme.BodyStrong;
+        _burstTargetLabel.ForeColor = Theme.Accent;
+        _burstTargetLabel.Margin = new Padding(0, 6, 0, 0);
+
+        _burstCadenceLabel.AutoSize = true;
+        _burstCadenceLabel.ForeColor = Theme.Muted;
+        _burstCadenceLabel.MaximumSize = new Size(CardWidth - 20, 0);
+        _burstCadenceLabel.Margin = new Padding(0, 4, 0, 8);
+
+        var optimizeBtn = SecondaryButton("⚡ Optimize all actions for tracker score (~85%)", () =>
+        {
+            _burstEnabled.Checked = true;
+            _burstTargetSlider.Value = 85;
+            _pulseEnabled.Checked = true;
+            _minInterval.Value = 8;
+            _maxInterval.Value = 15;
+            _scrollEnabled.Checked = true;
+            _scrollMode.SelectedIndex = (int)ScrollMode.Rebound;
+            _scrollAmount.Value = 2;
+            _scrollMinInterval.Value = 10;
+            _scrollMaxInterval.Value = 20;
+            _pathEnabled.Checked = true;
+            _pathPattern.SelectedIndex = Array.IndexOf(PatternNames, "Organic jiggle");
+            _pathMinInterval.Value = 12;
+            _pathMaxInterval.Value = 24;
+            SyncEnabledState();
+            UpdateBurstCadenceText();
+            ShowConfirm("Applied tracker-optimized presets (~85% score). Click 'Save settings' below to persist.");
+        });
+        optimizeBtn.Width = CardWidth - 20;
+
+        TableLayoutPanel table = TwoColumnTable();
+        AddFullWidth(table, _burstEnabled);
+        AddRow(table, "Target activity score", _burstTargetSlider);
+        AddRow(table, "Target percentage", _burstTargetLabel);
+        AddFullWidth(table, _burstCadenceLabel);
+        AddFullWidth(table, optimizeBtn);
+        AddFullWidth(table, Hint("Designed for employee monitoring & screen tracking tools (Time Doctor, Hubstaff, Upwork, etc.). " +
+                                 "Executes realistic human work bursts (gentle organic drift + rebound scroll) separated by natural micro-pauses. " +
+                                 "Instantly cancels if you touch your mouse."));
+        return SizedCard(table);
+    }
+
+    private void UpdateBurstCadenceText()
+    {
+        int pct = _burstTargetSlider.Value;
+        _burstTargetLabel.Text = $"{pct}% Target Score";
+        double duty = pct / 100.0;
+        double activeSec = 5.0;
+        double pauseSec = activeSec * (1.0 - duty) / duty;
+        _burstCadenceLabel.Text = $"Simulated work rhythm: ~{activeSec:0.0}s active drift/scroll · ~{pauseSec:0.1}s micro-pause\n" +
+                                  $"Estimated tracker activity score: {pct - 3}% – {Math.Min(98, pct + 5)}%";
+    }
+
     private Control BuildSettings()
     {
         ConfigureSpinner(_threshold, 1, 1440, 64);
@@ -500,7 +653,12 @@ internal sealed class DashboardForm : Form
         Configure(_adaptiveMode, "Let NotIdle choose the actions and cadence for itself");
         Configure(_keepDisplayOn, "Keep the display on, not just the machine");
         Configure(_pauseFullScreen, "Pause during full-screen, game, or presentation apps");
+        Configure(_pauseOnBattery, "Pause when running on laptop battery (save power)");
+        Configure(_pauseOnLowBattery, "Pause when battery is low (<= 20%)");
+        Configure(_globalHotkey, "Global toggle hotkey (Ctrl + Alt + K)");
         Configure(_startWithWindows, "Start with Windows");
+        Configure(_stealthMode, "Stealth mode (no popups, clean screenshots, disguised tray tooltip)");
+        Configure(_ghostMode, "Ghost mode (100% invisible: remove tray icon, hotkey only)");
 
         TableLayoutPanel table = TwoColumnTable();
 
@@ -517,7 +675,15 @@ internal sealed class DashboardForm : Form
                                  "quietens down again. It never enables clicking."));
         AddFullWidth(table, _keepDisplayOn);
         AddFullWidth(table, _pauseFullScreen);
+        AddFullWidth(table, _pauseOnBattery);
+        AddFullWidth(table, _pauseOnLowBattery);
+        AddFullWidth(table, _globalHotkey);
         AddFullWidth(table, _startWithWindows);
+        AddFullWidth(table, _stealthMode);
+        AddFullWidth(table, _ghostMode);
+        AddFullWidth(table, Hint("Ghost mode completely removes the tray icon from the Windows taskbar near the clock. " +
+                                 "NotIdle runs 100% invisibly in the background. Press Ctrl + Alt + K to toggle keep-awake, " +
+                                 "and Ctrl + Alt + D at any time to re-open this configuration window."));
 
         var root = new TableLayoutPanel
         {
@@ -567,9 +733,43 @@ internal sealed class DashboardForm : Form
             : "—";
         _pathStatus.Text = DescribePath(s);
         _clickStatus.Text = DescribeClicks(s);
+        _scrollStatus.Text = DescribeScroll(s);
+        _burstStatus.Text = DescribeBurstStatus(s);
+        _powerStatus.Text = DescribePower(s);
         _foregroundApp.Text = s.ForegroundApp;
         _wakeLock.Text = s.WakeLockHeld ? "Held" : "Released";
         _autoOff.Text = s.AutoOffArmed ? FormatSpan(s.TimeUntilAutoOff) : "never";
+        _timelineBar.SetHistory(s.RecentHistory);
+    }
+
+    private static string DescribeScroll(NotIdleStatus s)
+    {
+        bool configured = s.ScrollDescription != "off";
+        if (!configured && s.ScrollCount == 0) return "off";
+
+        string scrolls = $"{s.ScrollCount} scroll{Plural(s.ScrollCount)}";
+        if (!configured) return scrolls;
+
+        return s.State == ActivityState.KeepAwake
+            ? $"{scrolls} · next in {FormatSpan(s.TimeUntilNextScroll)}"
+            : $"{scrolls} · armed";
+    }
+
+    private static string DescribeBurstStatus(NotIdleStatus s)
+    {
+        if (!s.BurstModeEnabled) return "off";
+        string bursts = $"{s.BurstCount} burst{Plural(s.BurstCount)}";
+        if (s.BurstRunning) return $"Active (~{s.TargetActivityPercent}% target) · {bursts}";
+        return s.State == ActivityState.KeepAwake
+            ? $"Resting · target {s.TargetActivityPercent}%"
+            : $"Armed · target {s.TargetActivityPercent}%";
+    }
+
+    private static string DescribePower(NotIdleStatus s)
+    {
+        if (s.BatteryPercent < 0) return "AC Power (Desktop)";
+        string pct = $"{s.BatteryPercent}%";
+        return s.IsOnBattery ? $"Battery ({pct})" : $"Plugged in ({pct})";
     }
 
     // These two rows report live state; the configuration behind them lives on the
@@ -635,7 +835,12 @@ internal sealed class DashboardForm : Form
         draft.AdaptiveMode = _adaptiveMode.Checked;
         draft.KeepDisplayOn = _keepDisplayOn.Checked;
         draft.PauseWhenFullScreen = _pauseFullScreen.Checked;
+        draft.PauseOnBattery = _pauseOnBattery.Checked;
+        draft.PauseOnLowBattery = _pauseOnLowBattery.Checked;
+        draft.GlobalHotkeyEnabled = _globalHotkey.Checked;
         draft.StartWithWindows = _startWithWindows.Checked;
+        draft.StealthMode = _stealthMode.Checked;
+        draft.GhostMode = _ghostMode.Checked;
 
         draft.CursorPulseEnabled = _pulseEnabled.Checked;
         draft.MinIntervalSeconds = (int)_minInterval.Value;
@@ -658,6 +863,15 @@ internal sealed class DashboardForm : Form
         draft.AutoClickDoubleClick = _autoClickDouble.Checked;
         draft.AutoClickPoints = _autoClickPoints.Text;
         draft.AutoClickTravelSpeed = (int)_autoClickTravelSpeed.Value;
+
+        draft.ScrollEnabled = _scrollEnabled.Checked;
+        draft.ScrollMode = ScrollModes[Math.Max(0, _scrollMode.SelectedIndex)];
+        draft.ScrollAmount = (int)_scrollAmount.Value;
+        draft.ScrollMinIntervalSeconds = (int)_scrollMinInterval.Value;
+        draft.ScrollMaxIntervalSeconds = (int)_scrollMaxInterval.Value;
+
+        draft.BurstModeEnabled = _burstEnabled.Checked;
+        draft.TargetActivityPercent = _burstTargetSlider.Value;
 
         bool wantedPath = _pathEnabled.Checked;
         bool typedClickPoints = _autoClickPoints.Text.Trim().Length > 0;
@@ -699,7 +913,14 @@ internal sealed class DashboardForm : Form
         _adaptiveMode.Checked = s.AdaptiveMode;
         _keepDisplayOn.Checked = s.KeepDisplayOn;
         _pauseFullScreen.Checked = s.PauseWhenFullScreen;
+        _pauseOnBattery.Checked = s.PauseOnBattery;
+        _pauseOnLowBattery.Checked = s.PauseOnLowBattery;
+        _globalHotkey.Checked = s.GlobalHotkeyEnabled;
         _startWithWindows.Checked = s.StartWithWindows;
+        _stealthMode.Checked = s.StealthMode;
+        _ghostMode.Checked = s.GhostMode;
+        Text = s.StealthMode ? "System Audio Device Settings" : "NotIdle";
+        ShowInTaskbar = true;
 
         _pulseEnabled.Checked = s.CursorPulseEnabled;
         SetValue(_minInterval, s.MinIntervalSeconds);
@@ -723,6 +944,16 @@ internal sealed class DashboardForm : Form
         _autoClickPoints.Text = s.AutoClickPoints;
         SetValue(_autoClickTravelSpeed, s.AutoClickTravelSpeed);
 
+        _scrollEnabled.Checked = s.ScrollEnabled;
+        _scrollMode.SelectedIndex = Math.Max(0, Array.IndexOf(ScrollModes, s.ScrollMode));
+        SetValue(_scrollAmount, s.ScrollAmount);
+        SetValue(_scrollMinInterval, s.ScrollMinIntervalSeconds);
+        SetValue(_scrollMaxInterval, s.ScrollMaxIntervalSeconds);
+
+        _burstEnabled.Checked = s.BurstModeEnabled;
+        _burstTargetSlider.Value = Math.Clamp(s.TargetActivityPercent, Settings.MinTargetActivityPercent, Settings.MaxTargetActivityPercent);
+        UpdateBurstCadenceText();
+
         SyncEnabledState();
     }
 
@@ -734,11 +965,13 @@ internal sealed class DashboardForm : Form
 
         bool path = _pathEnabled.Checked;
         bool custom = _pathPattern.SelectedIndex == Array.IndexOf(Patterns, PathPattern.Custom);
+        bool fullScreen = _pathPattern.SelectedIndex == Array.IndexOf(Patterns, PathPattern.FullScreen);
         _pathPattern.Enabled = _pathOrigin.Enabled = _pathSpeed.Enabled = path;
         _pathMinInterval.Enabled = _pathMaxInterval.Enabled = _pathRestoreCursor.Enabled = path;
-        // Radius and origin shape a generated pattern; a custom list carries its own.
-        _pathRadius.Enabled = path && !custom;
-        _pathOrigin.Enabled = path && !custom;
+        // Radius and origin shape a generated pattern; a custom list carries its own,
+        // and full screen roams the whole desktop regardless.
+        _pathRadius.Enabled = path && !custom && !fullScreen;
+        _pathOrigin.Enabled = path && !custom && !fullScreen;
         _pathPoints.Enabled = _pathPointsCaption.Enabled = path && custom;
 
         bool click = _autoClickEnabled.Checked;
@@ -746,6 +979,12 @@ internal sealed class DashboardForm : Form
         _autoClickPoints.Enabled = _autoClickPointsCaption.Enabled = click;
         // Travel speed only means anything when there is somewhere to travel to.
         _autoClickTravelSpeed.Enabled = click && _autoClickPoints.Text.Trim().Length > 0;
+
+        bool scroll = _scrollEnabled.Checked;
+        _scrollMode.Enabled = _scrollAmount.Enabled = _scrollMinInterval.Enabled = _scrollMaxInterval.Enabled = scroll;
+
+        bool burst = _burstEnabled.Checked;
+        _burstTargetSlider.Enabled = burst;
     }
 
     // Picks minutes when the stored value is a whole number of minutes, else seconds.

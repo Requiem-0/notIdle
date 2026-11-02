@@ -6,10 +6,11 @@ namespace NotIdle.Core;
 /// <summary>What fired during one call to <see cref="KeepAwakeEngine.RunDueActions"/>.</summary>
 /// <param name="Pulsed">A cursor pulse was emitted.</param>
 /// <param name="PathStarted">A path run was started; it finishes asynchronously.</param>
+/// <param name="Scrolled">A mouse wheel scroll was emitted.</param>
 /// <param name="CursorAfterPulse">Where the pulse left the pointer. Valid only when <paramref name="Pulsed"/>.</param>
-public readonly record struct ActionsFired(bool Pulsed, bool PathStarted, CursorPoint CursorAfterPulse)
+public readonly record struct ActionsFired(bool Pulsed, bool PathStarted, bool Scrolled = false, CursorPoint CursorAfterPulse = default)
 {
-    public bool Any => Pulsed || PathStarted;
+    public bool Any => Pulsed || PathStarted || Scrolled;
 }
 
 /// <summary>
@@ -48,17 +49,22 @@ public sealed class KeepAwakeEngine : IDisposable
 {
     private readonly ISyntheticInputSink _sink;
     private readonly IExecutionStateController _power;
+    private readonly ISystemInputSource _input;
     private readonly PathPlayer _path;
+    private readonly BurstPlayer _burst;
     private readonly AutoClicker _clicker;
     private readonly AdaptiveTuner _tuner = new();
     private readonly Lock _gate = new();
 
     private readonly Schedule _pulseSchedule = new();
     private readonly Schedule _pathSchedule = new();
+    private readonly Schedule _scrollSchedule = new();
 
     private bool _wakeLockHeld;
     private bool _wakeLockDisplay;
     private long _pulseCount;
+    private long _scrollCount;
+    private bool _lastScrollDown = true;
     private long _clickInterruptions;
     private bool _disposed;
 
@@ -74,8 +80,10 @@ public sealed class KeepAwakeEngine : IDisposable
     {
         _sink = sink;
         _power = power;
+        _input = input;
         _path = new PathPlayer(sink, input);
-        _clicker = new AutoClicker(sink, input, () => _path.IsRunning);
+        _burst = new BurstPlayer(sink, input);
+        _clicker = new AutoClicker(sink, input, () => _path.IsRunning || _burst.IsRunning);
 
         _clicker.SyntheticInput += OnSyntheticInput;
         _clicker.UserTookOver += OnClickerStoppedByUser;
@@ -85,6 +93,12 @@ public sealed class KeepAwakeEngine : IDisposable
     public long PulseCount
     {
         get { lock (_gate) return _pulseCount; }
+    }
+
+    /// <summary>Total mouse wheel scroll actions emitted since start.</summary>
+    public long ScrollCount
+    {
+        get { lock (_gate) return _scrollCount; }
     }
 
     /// <summary>Path runs started since start, including ones the user interrupted.</summary>
@@ -104,6 +118,12 @@ public sealed class KeepAwakeEngine : IDisposable
 
     /// <summary>True while the pointer is being walked along a path.</summary>
     public bool IsPathRunning => _path.IsRunning;
+
+    /// <summary>True while a human activity burst loop is actively running.</summary>
+    public bool IsBurstRunning => _burst.IsRunning;
+
+    /// <summary>Total completed human activity bursts since start.</summary>
+    public long BurstCount => _burst.BurstCount;
 
     /// <summary>True while the auto-clicker is armed.</summary>
     public bool IsAutoClickActive => _clicker.IsActive;
@@ -133,6 +153,12 @@ public sealed class KeepAwakeEngine : IDisposable
     public TimeSpan TimeUntilNextPath(long nowTick)
     {
         lock (_gate) return _pathSchedule.TimeRemaining(nowTick);
+    }
+
+    /// <summary>Time until the next scroll action is due, or <see cref="TimeSpan.Zero"/> if due now.</summary>
+    public TimeSpan TimeUntilNextScroll(long nowTick)
+    {
+        lock (_gate) return _scrollSchedule.TimeRemaining(nowTick);
     }
 
     /// <summary>
@@ -170,12 +196,14 @@ public sealed class KeepAwakeEngine : IDisposable
     public void ResetSchedule(long nowTick)
     {
         _path.Stop();
+        _burst.Stop();
         _clicker.SetActive(false, SafeSettings());
 
         lock (_gate)
         {
             _pulseSchedule.Reset(nowTick);
             _pathSchedule.Reset(nowTick);
+            _scrollSchedule.Reset(nowTick);
         }
 
         _tuner.Reset();
@@ -203,9 +231,25 @@ public sealed class KeepAwakeEngine : IDisposable
     }
 
     /// <summary>
+    /// Emit a scroll action if one is due, and pick the next randomized interval.
+    /// </summary>
+    public bool TryScroll(long nowTick, Settings settings)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !_scrollSchedule.IsDue(nowTick)) return false;
+            _scrollCount++;
+            _scrollSchedule.Advance(nowTick, settings.ScrollMinIntervalSeconds, settings.ScrollMaxIntervalSeconds);
+        }
+
+        ExecuteScroll(settings);
+        OnSyntheticInput(nowTick, _input.GetCursorPosition());
+        return true;
+    }
+
+    /// <summary>
     /// Run every action that is enabled and due. Each has its own schedule, so a
-    /// single call can start a path run and emit a pulse in the same instant — that
-    /// is deliberate, not a race.
+    /// single call can start a path run, emit a pulse, and scroll in the same instant.
     /// </summary>
     /// <remarks>
     /// The auto-clicker is not driven from here: <see cref="SetAutoClickActive"/>
@@ -219,6 +263,7 @@ public sealed class KeepAwakeEngine : IDisposable
         AdaptivePlan plan = Resolve(settings);
         bool pulsed = false;
         bool pathStarted = false;
+        bool scrolled = false;
         CursorPoint cursorAfter = default;
 
         if (plan.PulseEnabled && TryPulse(nowTick, settings, out cursorAfter))
@@ -241,7 +286,21 @@ public sealed class KeepAwakeEngine : IDisposable
             if (due) pathStarted = _path.TryStart(settings, OnSyntheticInput);
         }
 
-        return new ActionsFired(pulsed, pathStarted, cursorAfter);
+        if (settings.ScrollEnabled && TryScroll(nowTick, settings))
+        {
+            scrolled = true;
+        }
+
+        if (settings.BurstModeEnabled)
+        {
+            _burst.TryStart(settings, OnSyntheticInput, OnBurstStoppedByUser);
+        }
+        else
+        {
+            _burst.Stop();
+        }
+
+        return new ActionsFired(pulsed, pathStarted, scrolled, cursorAfter);
     }
 
     /// <summary>
@@ -295,14 +354,56 @@ public sealed class KeepAwakeEngine : IDisposable
         _clicker.ClickNow(settings);
     }
 
+    /// <summary>Emit one scroll action right now, for the UI's "Test scroll" action.</summary>
+    public void ScrollNow(long nowTick, Settings settings)
+    {
+        if (_disposed) return;
+        lock (_gate)
+        {
+            _scrollCount++;
+            _scrollSchedule.Advance(nowTick, settings.ScrollMinIntervalSeconds, settings.ScrollMaxIntervalSeconds);
+        }
+        ExecuteScroll(settings);
+        OnSyntheticInput(nowTick, _input.GetCursorPosition());
+    }
+
+    private void ExecuteScroll(Settings settings)
+    {
+        switch (settings.ScrollMode)
+        {
+            case ScrollMode.Rebound:
+                _sink.Scroll(-settings.ScrollAmount);
+                Thread.Sleep(60);
+                _sink.Scroll(settings.ScrollAmount);
+                break;
+            case ScrollMode.Down:
+                _sink.Scroll(-settings.ScrollAmount);
+                break;
+            case ScrollMode.Up:
+                _sink.Scroll(settings.ScrollAmount);
+                break;
+            case ScrollMode.Alternating:
+                bool down;
+                lock (_gate)
+                {
+                    down = _lastScrollDown;
+                    _lastScrollDown = !_lastScrollDown;
+                }
+                _sink.Scroll(down ? -settings.ScrollAmount : settings.ScrollAmount);
+                break;
+        }
+    }
+
     /// <summary>Zero every counter.</summary>
     public void ResetStatistics()
     {
         lock (_gate)
         {
             _pulseCount = 0;
+            _scrollCount = 0;
             _clickInterruptions = 0;
         }
+        _burst.ResetStatistics();
         _clicker.ResetStatistics();
     }
 
@@ -345,6 +446,11 @@ public sealed class KeepAwakeEngine : IDisposable
     }
 
     private void OnClickerStoppedByUser()
+    {
+        lock (_gate) _clickInterruptions++;
+    }
+
+    private void OnBurstStoppedByUser()
     {
         lock (_gate) _clickInterruptions++;
     }
@@ -405,6 +511,7 @@ public sealed class KeepAwakeEngine : IDisposable
         _clicker.SyntheticInput -= OnSyntheticInput;
         _clicker.UserTookOver -= OnClickerStoppedByUser;
         _clicker.Dispose();
+        _burst.Dispose();
         _path.Dispose();
     }
 }

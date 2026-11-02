@@ -25,17 +25,9 @@ namespace NotIdle.Core.Native;
 /// </list>
 ///
 /// <para>Keystrokes are still never synthesized.</para>
-///
-/// <para>Every injected event carries <see cref="SignatureTag"/> in
-/// <c>dwExtraInfo</c>, the conventional Win32 way to mark input as one's own.
-/// It costs nothing and makes the origin of these events legible to anything
-/// that inspects them, including NotIdle itself.</para>
 /// </summary>
 public sealed class Win32SyntheticInput : ISyntheticInputSink
 {
-    /// <summary>Marker written into <c>dwExtraInfo</c> on every event we inject.</summary>
-    public const int SignatureTag = 0x4E49_444C; // "NIDL"
-
     private const uint INPUT_MOUSE = 0;
     private const uint MOUSEEVENTF_MOVE = 0x0001;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
@@ -44,8 +36,11 @@ public sealed class Win32SyntheticInput : ISyntheticInputSink
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
     private const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
     private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
     private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
+
+    private const int WHEEL_DELTA = 120;
 
     private const int SM_XVIRTUALSCREEN = 76;
     private const int SM_YVIRTUALSCREEN = 77;
@@ -125,6 +120,17 @@ public sealed class Win32SyntheticInput : ISyntheticInputSink
         }
     }
 
+    public void Scroll(int notches)
+    {
+        if (notches == 0) return;
+
+        lock (_gate)
+        {
+            _buffer[0] = Wheel(notches * WHEEL_DELTA);
+            _ = SendInput(1, _buffer, Marshal.SizeOf<INPUT>());
+        }
+    }
+
     public ScreenBounds GetVirtualScreen()
     {
         int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -148,7 +154,6 @@ public sealed class Win32SyntheticInput : ISyntheticInputSink
                 dx = dx,
                 dy = dy,
                 dwFlags = MOUSEEVENTF_MOVE,
-                dwExtraInfo = SignatureTag,
             }
         }
     };
@@ -172,7 +177,6 @@ public sealed class Win32SyntheticInput : ISyntheticInputSink
                     dx = (int)Math.Round((target.X - screen.Left) * 65535.0 / width),
                     dy = (int)Math.Round((target.Y - screen.Top) * 65535.0 / height),
                     dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                    dwExtraInfo = SignatureTag,
                 }
             }
         };
@@ -186,7 +190,19 @@ public sealed class Win32SyntheticInput : ISyntheticInputSink
             mi = new MOUSEINPUT
             {
                 dwFlags = flags,
-                dwExtraInfo = SignatureTag,
+            }
+        }
+    };
+
+    private static INPUT Wheel(int delta) => new()
+    {
+        type = INPUT_MOUSE,
+        U = new InputUnion
+        {
+            mi = new MOUSEINPUT
+            {
+                mouseData = unchecked((uint)delta),
+                dwFlags = MOUSEEVENTF_WHEEL,
             }
         }
     };

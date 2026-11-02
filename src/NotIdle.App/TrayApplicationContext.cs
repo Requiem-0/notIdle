@@ -22,7 +22,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _toggleItem;
+    private readonly ToolStripMenuItem _timerSubmenu;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly GlobalHotkeyHook _hotkey;
 
     private Settings _settings;
 
@@ -37,6 +39,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _statusItem = new ToolStripMenuItem("Status: —") { Enabled = false };
         _toggleItem = new ToolStripMenuItem("Pause keep-awake", null, (_, _) => ToggleEnabled());
+        _timerSubmenu = BuildTimerSubmenu();
         _startupItem = new ToolStripMenuItem("Start with Windows", null, (_, _) => ToggleStartup())
         {
             Checked = _settings.StartWithWindows,
@@ -46,6 +49,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_toggleItem);
+        menu.Items.Add(_timerSubmenu);
         menu.Items.Add(new ToolStripMenuItem("Open NotIdle…", null, (_, _) => ShowDashboard()));
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -56,11 +60,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray = new NotifyIcon
         {
             Icon = _icons.For(ActivityState.Disabled),
-            Text = "NotIdle",
-            Visible = true,
+            Text = _settings.StealthMode ? "System Audio Host" : "NotIdle",
+            Visible = !_settings.GhostMode,
             ContextMenuStrip = menu,
         };
         _tray.Click += (_, _) => ShowDashboard();
+
+        _hotkey = new GlobalHotkeyHook(
+            onToggle: () =>
+            {
+                ToggleEnabled();
+                bool enabled = _settingsManager.Current.Enabled;
+                if (!_settings.StealthMode && !_settings.GhostMode)
+                {
+                    _tray.ShowBalloonTip(1500, "System Audio Host",
+                        enabled ? "Audio endpoint resumed" : "Audio endpoint paused",
+                        ToolTipIcon.Info);
+                }
+            },
+            onDashboard: ShowDashboard);
+
+        if (_settings.GlobalHotkeyEnabled) _hotkey.Register();
 
         _controller.StateChanged += OnStateChanged;
         _settingsManager.Changed += OnSettingsChanged;
@@ -90,13 +110,65 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // The registry is reconciled here, in one place, however the setting changed.
         StartupManager.Apply(settings.StartWithWindows);
 
+        if (settings.GlobalHotkeyEnabled) _hotkey.Register();
+        else _hotkey.Unregister();
+
         if (!_marshaller.IsHandleCreated) return;
         _marshaller.BeginInvoke(() =>
         {
             _settings = settings;
+            _tray.Visible = !settings.GhostMode;
             _startupItem.Checked = settings.StartWithWindows;
+            UpdateTimerChecks();
             Render(_controller.CurrentState);
         });
+    }
+
+    private ToolStripMenuItem BuildTimerSubmenu()
+    {
+        var menu = new ToolStripMenuItem("Keep awake for…");
+        menu.DropDownItems.Add(CreateTimerItem("15 minutes", 15));
+        menu.DropDownItems.Add(CreateTimerItem("30 minutes", 30));
+        menu.DropDownItems.Add(CreateTimerItem("1 hour", 60));
+        menu.DropDownItems.Add(CreateTimerItem("2 hours", 120));
+        menu.DropDownItems.Add(CreateTimerItem("4 hours", 240));
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        menu.DropDownItems.Add(CreateTimerItem("Indefinitely (No timer)", 0));
+        return menu;
+    }
+
+    private ToolStripMenuItem CreateTimerItem(string text, int minutes)
+    {
+        return new ToolStripMenuItem(text, null, (_, _) => SetAutoOff(minutes))
+        {
+            Tag = minutes,
+            Checked = _settings.AutoOffMinutes == minutes,
+        };
+    }
+
+    private void SetAutoOff(int minutes)
+    {
+        _settingsManager.Update(s =>
+        {
+            s.AutoOffMinutes = minutes;
+            s.Enabled = true;
+        });
+        string duration = minutes == 0 ? "Indefinite" : Settings.FormatDuration(minutes * 60);
+        if (!_settings.StealthMode)
+        {
+            _tray.ShowBalloonTip(1500, "NotIdle", $"Keep-awake timer: {duration}", ToolTipIcon.Info);
+        }
+    }
+
+    private void UpdateTimerChecks()
+    {
+        foreach (ToolStripItem item in _timerSubmenu.DropDownItems)
+        {
+            if (item is ToolStripMenuItem menuItem && menuItem.Tag is int mins)
+            {
+                menuItem.Checked = _settings.AutoOffMinutes == mins;
+            }
+        }
     }
 
     private void Render(ActivityState state)
@@ -106,10 +178,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _statusItem.Text = $"Status: {label}";
         _toggleItem.Text = _settings.Enabled ? "Pause keep-awake" : "Resume keep-awake";
         _tray.Icon = _icons.For(state);
-        _tray.Text = Truncate(
-            $"NotIdle — {label}\n" +
-            $"Idle after {_settings.DescribeThreshold()} · {_settings.DescribeActions()}\n" +
-            $"Pulse every {_settings.DescribeInterval()}");
+        _tray.Text = _settings.StealthMode
+            ? "System Audio Host"
+            : Truncate(
+                $"NotIdle — {label}\n" +
+                $"Idle after {_settings.DescribeThreshold()} · {_settings.DescribeActions()}\n" +
+                $"Pulse every {_settings.DescribeInterval()}");
     }
 
     // ── Session / power events ───────────────────────────────────────────────
@@ -147,13 +221,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ToggleStartup() => _settingsManager.Update(s => s.StartWithWindows = !s.StartWithWindows);
 
+    public void SummonDashboard()
+    {
+        if (_marshaller.IsHandleCreated)
+            _marshaller.BeginInvoke(ShowDashboard);
+    }
+
     private void ShowDashboard()
     {
-        _dashboard.Show();
         if (_dashboard.WindowState == FormWindowState.Minimized)
             _dashboard.WindowState = FormWindowState.Normal;
-        _dashboard.Activate();
+        _dashboard.Show();
+        _dashboard.TopMost = true;
         _dashboard.BringToFront();
+        _dashboard.Activate();
+        _dashboard.TopMost = false;
     }
 
     // Tray tooltips are capped at 127 chars by the shell.
@@ -171,6 +253,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _tray.Visible = false;
             _tray.Dispose();
             _icons.Dispose();
+            _hotkey.Dispose();
             _controller.Dispose();
             _marshaller.Dispose();
         }

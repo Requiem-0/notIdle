@@ -130,4 +130,82 @@ public class KeepAwakeEngineTests
         Assert.Equal(2, desktop.PulseCount);
         Assert.Equal(2, engine.PulseCount);
     }
+
+    [Fact]
+    public void ScrollNowEmitsScrollAndCountsEvent()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine, Settings settings) = New();
+        settings.ScrollEnabled = true;
+        settings.ScrollMode = ScrollMode.Down;
+        settings.ScrollAmount = 3;
+
+        engine.ScrollNow(desktop.Now, settings);
+
+        Assert.Equal(1, desktop.ScrollCount);
+        Assert.Equal(-3, desktop.LastScrollNotches);
+        Assert.Equal(1, engine.ScrollCount);
+    }
+
+    [Fact]
+    public void TryScrollRespectsScheduleAndModes()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine, Settings settings) = New();
+        settings.ScrollEnabled = true;
+        settings.ScrollMode = ScrollMode.Up;
+        settings.ScrollAmount = 4;
+        settings.ScrollMinIntervalSeconds = 30;
+        settings.ScrollMaxIntervalSeconds = 60;
+
+        engine.ResetSchedule(desktop.Now);
+
+        // First scroll is due immediately after reset
+        Assert.True(engine.TryScroll(desktop.Now, settings));
+        Assert.Equal(1, desktop.ScrollCount);
+        Assert.Equal(4, desktop.LastScrollNotches);
+
+        // Before interval passes, should not scroll
+        desktop.Now += 1000;
+        Assert.False(engine.TryScroll(desktop.Now, settings));
+        Assert.Equal(1, desktop.ScrollCount);
+
+        // Fast forward 61 seconds
+        desktop.Now += 61_000;
+        Assert.True(engine.TryScroll(desktop.Now, settings));
+        Assert.Equal(2, desktop.ScrollCount);
+    }
+
+    [Fact]
+    public void BurstModeStartsAndStopsWithEngine()
+    {
+        (FakeDesktop desktop, KeepAwakeEngine engine, Settings settings) = New();
+        using (engine)
+        {
+            settings.BurstModeEnabled = true;
+            settings.TargetActivityPercent = 85;
+
+            engine.RunDueActions(desktop.Now, settings);
+            Assert.True(engine.IsBurstRunning);
+
+            // Stand down via ResetSchedule
+            engine.ResetSchedule(desktop.Now);
+            Assert.False(engine.IsBurstRunning);
+
+            // Stand down via settings
+            settings.BurstModeEnabled = false;
+            engine.RunDueActions(desktop.Now, settings);
+            Assert.False(engine.IsBurstRunning);
+        }
+    }
+
+    [Fact]
+    public void TargetActivityPercentNormalization()
+    {
+        var s = new Settings { TargetActivityPercent = 10 };
+        s.Normalize();
+        Assert.Equal(Settings.MinTargetActivityPercent, s.TargetActivityPercent);
+
+        s.TargetActivityPercent = 120;
+        s.Normalize();
+        Assert.Equal(Settings.MaxTargetActivityPercent, s.TargetActivityPercent);
+    }
 }

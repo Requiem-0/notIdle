@@ -28,8 +28,18 @@ namespace NotIdle.Core;
 /// <param name="AutoClickActive">The auto-clicker is armed and firing.</param>
 /// <param name="ClickInterruptions">Times the clicker stood down because the pointer moved.</param>
 /// <param name="AutoClickDescription">Configured click cadence, formatted.</param>
+/// <param name="ScrollCount">Scroll actions emitted.</param>
+/// <param name="TimeUntilNextScroll">Countdown to the next scroll action.</param>
+/// <param name="ScrollDescription">Configured scroll cadence, formatted.</param>
+/// <param name="IsOnBattery">Whether the system is running on battery power.</param>
+/// <param name="BurstModeEnabled">Whether human work burst mode is enabled.</param>
+/// <param name="TargetActivityPercent">Target activity score percentage (e.g. 80%).</param>
+/// <param name="BurstRunning">Whether a burst cycle is running right now.</param>
+/// <param name="BurstCount">Completed burst cycles since start.</param>
+/// <param name="BurstDescription">Configured burst mode summary.</param>
 /// <param name="AdaptiveMode">Whether NotIdle is choosing the actions itself.</param>
 /// <param name="AdaptiveNote">What the adaptive tuner decided and why. Empty when adaptive mode is off.</param>
+/// <param name="RecentHistory">Recent activity timeline history buckets for visualization.</param>
 public sealed record NotIdleStatus(
     bool Enabled,
     ActivityState State,
@@ -55,13 +65,28 @@ public sealed record NotIdleStatus(
     bool AutoClickActive,
     long ClickInterruptions,
     string AutoClickDescription,
+    long ScrollCount,
+    TimeSpan TimeUntilNextScroll,
+    string ScrollDescription,
+    bool BurstModeEnabled,
+    int TargetActivityPercent,
+    bool BurstRunning,
+    long BurstCount,
+    string BurstDescription,
+    bool IsOnBattery,
+    int BatteryPercent,
     bool AdaptiveMode,
-    string AdaptiveNote)
+    string AdaptiveNote,
+    IReadOnlyList<ActivityBucket> RecentHistory)
 {
     public static readonly NotIdleStatus Empty = new(
         false, ActivityState.Disabled, TimeSpan.Zero, TimeSpan.Zero,
         0, 0, 0, "—", 0, TimeSpan.Zero, "—", false, false, TimeSpan.Zero,
         "—", 0, 0, false, TimeSpan.Zero, "off",
         0, false, 0, "off",
-        false, string.Empty);
+        0, TimeSpan.Zero, "off",
+        false, 80, false, 0, "off",
+        false, -1,
+        false, string.Empty,
+        []);
 }

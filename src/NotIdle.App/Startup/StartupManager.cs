@@ -1,3 +1,4 @@
+using System.IO;
 using Microsoft.Win32;
 
 namespace NotIdle.App.Startup;
@@ -9,7 +10,7 @@ namespace NotIdle.App.Startup;
 internal static class StartupManager
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "NotIdle";
+    private static string ValueName => Path.GetFileNameWithoutExtension(Environment.ProcessPath) ?? "NotIdle";
 
     public static bool IsEnabled()
     {

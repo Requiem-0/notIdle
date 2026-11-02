@@ -123,4 +123,50 @@ public class SessionScenarioTests
 
         Assert.Equal(parked, sim.Desktop.Cursor);
     }
+
+    [Fact]
+    public void PauseOnBattery_SuspendsKeepAwakeWhenUnplugged()
+    {
+        var sim = new SessionSimulator();
+        sim.Settings.PauseOnBattery = true;
+        sim.Desktop.IsOnBattery = false;
+        sim.RunUntilKeepAwake();
+
+        Assert.Equal(ActivityState.KeepAwake, sim.State);
+        int pulsesBefore = sim.Desktop.PulseCount;
+
+        // Unplug laptop
+        sim.Desktop.IsOnBattery = true;
+        sim.Tick(seconds: 10);
+
+        Assert.Equal(ActivityState.Suspended, sim.State);
+        Assert.Equal(pulsesBefore, sim.Desktop.PulseCount);
+        Assert.True(sim.Desktop.PowerHeld); // Display wake lock stays held, no synthetic pulses
+
+        // Plug back in
+        sim.Desktop.IsOnBattery = false;
+        sim.Tick(seconds: 1);
+        Assert.Equal(ActivityState.KeepAwake, sim.State);
+    }
+
+    [Fact]
+    public void PauseOnLowBattery_SuspendsWhenBelowThreshold()
+    {
+        var sim = new SessionSimulator();
+        sim.Settings.PauseOnBattery = false;
+        sim.Settings.PauseOnLowBattery = true;
+        sim.Settings.LowBatteryThresholdPercent = 20;
+        sim.Desktop.IsOnBattery = true;
+        sim.Desktop.BatteryPercentage = 80;
+
+        sim.RunUntilKeepAwake();
+        Assert.Equal(ActivityState.KeepAwake, sim.State);
+
+        // Battery drops to low threshold (15%)
+        sim.Desktop.BatteryPercentage = 15;
+        sim.Tick(seconds: 10);
+
+        Assert.Equal(ActivityState.Suspended, sim.State);
+    }
 }
+

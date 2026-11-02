@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows.Forms;
 using NotIdle.Core;
 using NotIdle.Core.Monitoring;
@@ -10,16 +11,46 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        // Single-instance guard: a second launch exits immediately.
-        using var mutex = new Mutex(initiallyOwned: true, "NotIdle.SingleInstance.9A8D51C0", out bool isNew);
-        if (!isNew) return;
+        string appName = Path.GetFileNameWithoutExtension(Environment.ProcessPath) ?? "NotIdle";
+
+        string eventName = $"{appName}.ShowEvent.9A8D51C0";
+
+        // Single-instance guard: a second launch signals the running instance to pop up and exits.
+        using var mutex = new Mutex(initiallyOwned: true, $"{appName}.SingleInstance.9A8D51C0", out bool isNew);
+        if (!isNew)
+        {
+            if (EventWaitHandle.TryOpenExisting(eventName, out var existingEvent))
+            {
+                existingEvent.Set();
+            }
+            return;
+        }
+
+        using var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, eventName);
 
         ApplicationConfiguration.Initialize();
 
         // ── Composition root ─────────────────────────────────────────────────
-        // Every Win32 dependency is injected here; nothing below this line knows
-        // about the platform, which is what keeps the core unit-testable.
-        var settingsManager = new SettingsManager(new JsonSettingsStore());
+        // Store settings in %APPDATA%\<AppName>\settings.json to match disguised identity.
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string newDir = Path.Combine(appData, appName);
+        string settingsPath = Path.Combine(newDir, "settings.json");
+
+        if (!File.Exists(settingsPath) && !string.Equals(appName, "NotIdle", StringComparison.OrdinalIgnoreCase))
+        {
+            string oldSettings = Path.Combine(appData, "NotIdle", "settings.json");
+            if (File.Exists(oldSettings))
+            {
+                try
+                {
+                    Directory.CreateDirectory(newDir);
+                    File.Copy(oldSettings, settingsPath, overwrite: false);
+                }
+                catch { /* best effort migration */ }
+            }
+        }
+
+        var settingsManager = new SettingsManager(new JsonSettingsStore(settingsPath));
 
         var inputSource = new Win32InputSource();
         var activity = new UserActivityMonitor(inputSource);
@@ -34,6 +65,11 @@ internal static class Program
 
         var controller = new NotIdleController(settingsManager, activity, windows, stateMachine, keepAwake);
         using var context = new TrayApplicationContext(controller, settingsManager);
+
+        RegisteredWaitHandle waitHandle = ThreadPool.RegisterWaitForSingleObject(showEvent, (_, _) =>
+        {
+            context.SummonDashboard();
+        }, null, -1, false);
 
         // Trim the startup working set once the UI has gone idle (init pages released).
         void OnFirstIdle(object? s, EventArgs e)

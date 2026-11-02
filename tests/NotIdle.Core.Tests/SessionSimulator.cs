@@ -44,10 +44,14 @@ public sealed class SessionSimulator
         ActivitySample sample = Activity.Sample(window.Handle, Desktop.Now);
         SinceGenuineInput = sample.TimeSinceGenuineInput;
 
+        bool batteryStandDown = (Desktop.IsOnBattery && Settings.PauseOnBattery)
+            || (Desktop.IsOnBattery && Settings.PauseOnLowBattery && Desktop.BatteryPercentage >= 0 && Desktop.BatteryPercentage <= Settings.LowBatteryThresholdPercent);
+        bool effectiveStandDown = standDown || batteryStandDown;
+
         var inputs = new StateInputs(
             Enabled: Settings.Enabled,
             Locked: locked,
-            StandDown: standDown,
+            StandDown: effectiveStandDown,
             SinceGenuineInput: sample.TimeSinceGenuineInput,
             IdleThreshold: Settings.IdleThreshold);
 
